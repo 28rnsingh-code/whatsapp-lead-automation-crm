@@ -15,7 +15,7 @@ if (fs.existsSync(rootEnvPath)) {
   dotenv.config();
 }
 
-import { resolveDatabaseConfig } from './config';
+import { resolveDatabaseConfig, isAllowedDatabaseTarget } from './config';
 
 export interface VerificationResult {
   hasEnvFile: boolean;
@@ -75,8 +75,9 @@ export async function verifyDatabaseConnection(): Promise<VerificationResult> {
   const targetPort = parseInt(parsed.port || '5432', 10);
   const targetUser = parsed.username;
 
-  // Safety check: Never run against default 'postgres' database or empty database name
-  if (!targetDatabase || targetDatabase === 'postgres') {
+  // Local/default postgres databases are blocked. Supabase's postgres database is allowed
+  // only when the hostname is an explicit Supabase project or pooler endpoint.
+  if (!isAllowedDatabaseTarget(targetDatabase, targetHost)) {
     return {
       hasEnvFile,
       hasDatabaseUrl: true,
@@ -85,7 +86,7 @@ export async function verifyDatabaseConnection(): Promise<VerificationResult> {
       targetPort,
       targetUser,
       connected: false,
-      error: `Safety guard: target database is '${targetDatabase}'. Migrations must only run against a dedicated database such as 'oneclick_crm'.`,
+      error: `Safety guard: target database '${targetDatabase}' is not allowed for host '${targetHost}'. Use a dedicated local database, or a Supabase project connection URL.`,
     };
   }
 

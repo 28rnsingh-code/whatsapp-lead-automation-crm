@@ -126,21 +126,15 @@ router.get('/stats', requireAuth, requireTenant(), async (req: Request, res: Res
       meta: { requestId },
     });
   } catch (error: any) {
-    res.json({
-      success: true,
-      data: {
-        totalLeads: 0,
-        pipelineValue: 0,
-        currency: 'INR',
-        activeFollowups: 0,
-        overdueTasks: 0,
-        wonLeadsCount: 0,
-        conversionRate: 0,
-        stageBreakdown: [],
-        sourceBreakdown: [],
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database is temporarily unavailable. Please retry shortly.',
+        requestId: requestId,
       },
-      meta: { requestId },
     });
+    return;
   }
 });
 

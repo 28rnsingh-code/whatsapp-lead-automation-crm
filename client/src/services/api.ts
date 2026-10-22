@@ -1,53 +1,31 @@
 import { Lead, ApiResponse, ApiError } from '../types';
 
-const API_BASE = '/api';
-const DEFAULT_TENANT_ID = 'tenant_bring_my_bite';
+const API_BASE = ((import.meta as any).env?.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
 
-let inFlightAuth: Promise<string> | null = null;
+function getActiveTenantId(): string {
+  try {
+    const raw = localStorage.getItem('auth_session');
+    const session = raw ? JSON.parse(raw) : null;
+    const tenantId = session?.tenant?.id;
+    return typeof tenantId === 'string' ? tenantId : '';
+  } catch {
+    return '';
+  }
+}
 
 /**
- * Retrieves the current authentication JWT from localStorage.
- * If missing or invalid, automatically authenticates with default dev credentials.
+ * Returns the existing token only. Login must happen through the login screen;
+ * API helpers never silently sign in with a shared demo credential.
  */
 export async function getAuthToken(): Promise<string> {
-  const existingToken = localStorage.getItem('auth_token');
-  if (existingToken) {
-    return existingToken;
+  const token = localStorage.getItem('auth_token');
+  if (!token) {
+    throw new Error('Authentication required. Please sign in to your workspace.');
   }
-
-  // Remove unintended demo auto-login from production builds
-  const isProd = Boolean((import.meta as { env?: { PROD?: boolean } }).env?.PROD);
-  if (isProd) {
-    throw new Error('Authentication required. Please log in to your workspace account.');
+  if (!getActiveTenantId()) {
+    throw new Error('Workspace session is missing. Please sign in again.');
   }
-
-  if (inFlightAuth) {
-    return inFlightAuth;
-  }
-
-  inFlightAuth = (async () => {
-    try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: 'rohan@bringmybite.in',
-          password: 'Password123!',
-        }),
-      });
-
-      const data = await res.json();
-      if (data.success && data.data?.token) {
-        localStorage.setItem('auth_token', data.data.token);
-        return data.data.token;
-      }
-      throw new Error(data.error?.message || 'Authentication failed');
-    } finally {
-      inFlightAuth = null;
-    }
-  })();
-
-  return inFlightAuth;
+  return token;
 }
 
 /**
@@ -61,7 +39,7 @@ async function apiRequest<T>(
   const token = await getAuthToken();
   const headers = new Headers(options.headers || {});
   headers.set('Authorization', `Bearer ${token}`);
-  headers.set('x-tenant-id', DEFAULT_TENANT_ID);
+  headers.set('x-tenant-id', getActiveTenantId());
   if (!headers.has('Content-Type') && options.body && typeof options.body === 'string') {
     headers.set('Content-Type', 'application/json');
   }
@@ -73,6 +51,7 @@ async function apiRequest<T>(
 
   if (response.status === 401 && !isRetry) {
     localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_session');
     return apiRequest<T>(endpoint, options, true);
   }
 
@@ -250,7 +229,7 @@ export async function downloadLeadsExportApi(params: {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
-      'x-tenant-id': DEFAULT_TENANT_ID,
+      'x-tenant-id': getActiveTenantId(),
     },
   });
 
@@ -574,7 +553,7 @@ export async function downloadReportsCsvApi(range: string = '30d'): Promise<Blob
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
-      'x-tenant-id': DEFAULT_TENANT_ID,
+      'x-tenant-id': getActiveTenantId(),
     },
   });
 
@@ -604,3 +583,90 @@ export async function changePlanApi(planId: string): Promise<any> {
 
 
 
+
+export interface IntegrationStatusResponse {
+  tenantSlug: string;
+  webhook: {
+    configured: boolean;
+    secretMasked: string;
+    endpoint: string;
+    status: string;
+  };
+  whatsapp: {
+    configured: boolean;
+    provider: string;
+    status: string;
+  };
+  ai: {
+    configured: boolean;
+    provider: string;
+    status: string;
+    mode: string;
+  };
+}
+
+export async function fetchIntegrationStatusApi(): Promise<IntegrationStatusResponse> {
+  return apiRequest<IntegrationStatusResponse>('/integrations/status', { method: 'GET' });
+}
+
+export async function rotateWebsiteWebhookApi(): Promise<{
+  secret: string;
+  tenantSlug: string;
+  webhookUrl: string;
+  secretDisplayedOnce: boolean;
+  note: string;
+}> {
+  return apiRequest('/integrations/website-webhook/rotate', { method: 'POST', body: JSON.stringify({}) });
+}
+
+export interface WorkspaceListItem {
+  id: string; name: string; slug: string; status: string;
+  timezone: string; currency: string; locale: string; role?: string;
+}
+export async function fetchWorkspacesApi(): Promise<WorkspaceListItem[]> {
+  return apiRequest<WorkspaceListItem[]>('/workspaces', { method: 'GET' });
+}
+export interface TeamMember {
+  membershipId: string; userId: string; name: string; email: string;
+  role: 'Admin' | 'Sales Manager' | 'Sales Executive' | 'Read-only';
+  status: 'active' | 'invited' | 'suspended'; leadsAssigned: number;
+}
+export interface TeamMembersResponse { members: TeamMember[]; demoMode: boolean; }
+export async function fetchTeamMembersApi(): Promise<TeamMembersResponse> {
+  return apiRequest<TeamMembersResponse>('/team/members', { method: 'GET' });
+}
+export async function createTeamInvitationApi(payload: { email: string; displayName?: string; role: TeamMember['role'] }): Promise<{
+  invitationId: string; membershipId: string; email: string; displayName: string; role: string;
+  status: string; inviteUrl: string; expiresAt: string; emailSent: boolean; message: string;
+}> {
+  return apiRequest('/team/invitations', { method: 'POST', body: JSON.stringify(payload) });
+}
+export async function updateTeamMemberApi(membershipId: string, payload: { role?: TeamMember['role']; status?: 'active' | 'suspended' }): Promise<TeamMember> {
+  return apiRequest<TeamMember>('/team/members/' + encodeURIComponent(membershipId), { method: 'PATCH', body: JSON.stringify(payload) });
+}
+export async function acceptTeamInvitationApi(payload: { token: string; password?: string }): Promise<{
+  email: string; workspaceName: string; membershipId: string; passwordAlreadySet: boolean;
+  loginRequired: boolean; message: string;
+}> {
+  return apiRequest('/team/invitations/accept', { method: 'POST', body: JSON.stringify(payload) });
+}
+export interface AuditEventItem {
+  id: string; actor: string; action: string; entityType: string; entityId: string;
+  occurredAt: string; requestId: string; metadata?: Record<string, unknown>;
+}
+export interface AuditEventsResponse {
+  events: AuditEventItem[]; totalCount: number; page: number; pageSize: number; demoMode: boolean;
+}
+export async function fetchAuditEventsApi(page = 1, pageSize = 50): Promise<AuditEventsResponse> {
+  const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  return apiRequest<AuditEventsResponse>('/audit/events?' + query.toString(), { method: 'GET' });
+}
+export async function downloadAuditCsvApi(): Promise<Blob> {
+  const token = await getAuthToken();
+  const response = await fetch(API_BASE + '/audit/export', {
+    method: 'GET',
+    headers: { Authorization: 'Bearer ' + token, 'x-tenant-id': getActiveTenantId() },
+  });
+  if (!response.ok) throw new Error('Audit export failed with HTTP ' + response.status);
+  return response.blob();
+}

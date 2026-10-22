@@ -48,9 +48,18 @@ export function maskCredentials(config: any): MaskedWhatsAppCredentials {
   };
 }
 
-// AES-256-GCM encryption for storing secrets at rest
-const ENCRYPTION_SECRET = process.env.ENCRYPTION_KEY || 'oneclick_crm_secret_key_32bytes!';
-const ENCRYPTION_KEY = crypto.createHash('sha256').update(ENCRYPTION_SECRET).digest();
+// AES-256-GCM encryption for provider secrets at rest.
+// The static fallback exists only for isolated local/demo runs. Production must provide
+// a private, high-entropy ENCRYPTION_KEY; otherwise refuse to boot rather than store secrets
+// under a predictable key.
+const ENCRYPTION_SECRET = process.env.ENCRYPTION_KEY;
+if (process.env.NODE_ENV === 'production' && (!ENCRYPTION_SECRET || ENCRYPTION_SECRET.length < 32)) {
+  throw new Error('CRITICAL SECURITY ERROR: ENCRYPTION_KEY must be configured with at least 32 characters in production.');
+}
+const ENCRYPTION_KEY = crypto
+  .createHash('sha256')
+  .update(ENCRYPTION_SECRET || 'oneclick_crm_secret_key_32bytes!')
+  .digest();
 
 export function encryptSecret(plainText: string): string {
   if (!plainText) return '';

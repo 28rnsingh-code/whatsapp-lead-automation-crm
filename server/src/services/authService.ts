@@ -1,6 +1,10 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import dotenv from 'dotenv';
+
+// Load private local environment before deriving JWT settings. Hosted environments can inject vars directly.
+dotenv.config();
 
 // If no JWT_SECRET is configured in environment, generate an in-memory 64-byte random key
 // This guarantees signatures cannot be forged using default/empty secrets.

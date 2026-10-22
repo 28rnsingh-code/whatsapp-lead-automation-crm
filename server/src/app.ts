@@ -14,15 +14,35 @@ import whatsappRoutes from './routes/whatsapp';
 import aiRoutes from './routes/ai';
 import reportRoutes from './routes/reports';
 import billingRoutes from './routes/billing';
+import teamRoutes from './routes/team';
+import auditRoutes from './routes/audit';
+import { auditMutationMiddleware } from './middleware/audit';
+import integrationsRoutes from './routes/integrations';
 
 export function createApp(): Express {
   const app = express();
+  app.set('trust proxy', 1);
 
-  // Standard Middlewares
-  app.use(cors());
+  // In production, browsers may call the API only from explicitly configured frontend origins.
+  // Local development keeps the Vite proxy convenient; non-browser clients need no Origin header.
+  const allowedOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  app.use(cors({
+    origin(origin, callback) {
+      if (!origin || process.env.NODE_ENV !== 'production') {
+        callback(null, true);
+        return;
+      }
+      callback(null, allowedOrigins.includes(origin));
+    },
+  }));
   app.use(express.json({ limit: '15mb' }));
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
   app.use(requestIdMiddleware);
+  app.use(auditMutationMiddleware);
 
   // Mount API Routes
   app.use('/api', healthRoutes);
@@ -37,6 +57,9 @@ export function createApp(): Express {
   app.use('/api/ai', aiRoutes);
   app.use('/api/reports', reportRoutes);
   app.use('/api/billing', billingRoutes);
+  app.use('/api/integrations', integrationsRoutes);
+  app.use('/api/team', teamRoutes);
+  app.use('/api/audit', auditRoutes);
   app.use('/api/import', importExportRoutes);
   app.use('/api', importExportRoutes); // also mounts /api/export/leads
 

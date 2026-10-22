@@ -90,8 +90,15 @@ router.get('/companies', requireAuth, requireTenant(), async (req: Request, res:
 
     res.json({ success: true, data: result.rows, meta: { totalCount: result.rows.length, requestId } });
   } catch (error: any) {
-    const list = IN_MEMORY_COMPANIES.filter(c => c.tenantId === rawTenantId || c.tenantId === tenantId);
-    res.json({ success: true, data: list, meta: { totalCount: list.length, requestId } });
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database is temporarily unavailable. Please retry shortly.',
+        requestId: requestId,
+      },
+    });
+    return;
   }
 });
 
@@ -192,8 +199,15 @@ router.get('/', requireAuth, requireTenant(), async (req: Request, res: Response
     const result = await pool.query(querySql, params);
     res.json({ success: true, data: result.rows, meta: { totalCount: result.rows.length, requestId } });
   } catch (error: any) {
-    let list = IN_MEMORY_CONTACTS.filter(c => c.tenantId === rawTenantId || c.tenantId === tenantId);
-    res.json({ success: true, data: list, meta: { totalCount: list.length, requestId } });
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database is temporarily unavailable. Please retry shortly.',
+        requestId: requestId,
+      },
+    });
+    return;
   }
 });
 

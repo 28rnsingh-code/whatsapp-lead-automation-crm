@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import { Modal } from './Modal';
 import { NavigationPage } from '../types';
+import { fetchWorkspacesApi, WorkspaceListItem } from '../services/api';
 
 export interface AppShellProps {
   currentPage: NavigationPage;
@@ -21,12 +22,19 @@ export const AppShell: React.FC<AppShellProps> = ({
 }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [workspaceModalOpen, setWorkspaceModalOpen] = useState(false);
-  const [currentWorkspace, setCurrentWorkspace] = useState('Bring My Bite');
-
-  const workspaces = [
-    { id: '1', name: 'Bring My Bite', plan: 'Enterprise SaaS', role: 'Admin' },
-    { id: '2', name: 'Automics Labs', plan: 'Growth Plan', role: 'Member' },
-  ];
+  const [currentWorkspace, setCurrentWorkspace] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('auth_session') || '{}').tenant?.name || 'Workspace'; }
+    catch { return 'Workspace'; }
+  });
+  const [workspaces, setWorkspaces] = useState<WorkspaceListItem[]>([]);
+  const [workspaceError, setWorkspaceError] = useState('');
+  useEffect(() => {
+    let active = true;
+    fetchWorkspacesApi()
+      .then((items) => { if (active) { setWorkspaces(items); setWorkspaceError(''); } })
+      .catch((err: any) => { if (active) setWorkspaceError(err.message || 'Unable to load workspaces.'); });
+    return () => { active = false; };
+  }, []);
 
   return (
     <div className="app-container">
@@ -51,7 +59,7 @@ export const AppShell: React.FC<AppShellProps> = ({
               onNavigate('leads');
             }
           }}
-          onOpenNotifications={() => alert('3 new lead alerts today.')}
+          onOpenNotifications={() => onNavigate('followups')}
         />
 
         <main className="content-container">
@@ -69,12 +77,25 @@ export const AppShell: React.FC<AppShellProps> = ({
           Select the active workspace to switch your team, pipeline, and WhatsApp lead context.
         </p>
         <div style={{ display: 'grid', gap: '10px' }}>
+          {workspaceError && <p role="alert" style={{ color: 'var(--red-text)' }}>{workspaceError}</p>}
+          {workspaces.length === 0 && !workspaceError && <p style={{ color: 'var(--text-muted)' }}>No additional workspaces are available for this account.</p>}
           {workspaces.map((ws) => (
             <div
               key={ws.id}
               onClick={() => {
+                try {
+                  const raw = localStorage.getItem('auth_session');
+                  if (raw) {
+                    const session = JSON.parse(raw);
+                    localStorage.setItem('auth_session', JSON.stringify({ ...session, tenant: ws, role: ws.role || session.role }));
+                  }
+                } catch {
+                  setWorkspaceError('Could not switch workspace. Sign in again.');
+                  return;
+                }
                 setCurrentWorkspace(ws.name);
                 setWorkspaceModalOpen(false);
+                window.location.reload();
               }}
               style={{
                 display: 'flex',
@@ -90,7 +111,7 @@ export const AppShell: React.FC<AppShellProps> = ({
             >
               <div>
                 <strong style={{ display: 'block', fontSize: '14px' }}>{ws.name}</strong>
-                <small style={{ color: 'var(--text-muted)' }}>{ws.plan} • Role: {ws.role}</small>
+                <small style={{ color: 'var(--text-muted)' }}>{ws.currency || 'INR'} • Role: {ws.role || 'Workspace member'}</small>
               </div>
               {currentWorkspace === ws.name && (
                 <span style={{ color: 'var(--blue)', fontWeight: 700 }}>✓ Active</span>

@@ -32,12 +32,12 @@ function fromDbTenantId(id: string): string {
 }
 
 function toDbUserId(id?: string): string | null {
-  if (id === 'user_rohan_singh' || !id) {
-    return DEFAULT_USER_ID;
-  }
-  // Validate if valid UUID, otherwise null
+  if (!id) return null;
+  // Legacy identity is used only by isolated development/test fixtures.
+  if (id === 'user_rohan_singh') return process.env.NODE_ENV === 'production' ? null : DEFAULT_USER_ID;
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  return uuidRegex.test(id) ? id : DEFAULT_USER_ID;
+  if (uuidRegex.test(id)) return id;
+  return process.env.NODE_ENV === 'production' ? null : DEFAULT_USER_ID;
 }
 
 // 1. List Leads (Strictly Tenant-Isolated from PostgreSQL)

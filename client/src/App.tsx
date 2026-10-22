@@ -18,15 +18,17 @@ import { SettingsPage } from './pages/SettingsPage';
 import { AuditPage } from './pages/AuditPage';
 import { AuthPage } from './pages/AuthPage';
 import { OnboardingPage } from './pages/OnboardingPage';
+import { InvitationAcceptancePage } from './pages/InvitationAcceptancePage';
 
 export const App: React.FC = () => {
-  const [currentPage, setCurrentPage] = useState<NavigationPage>('dashboard');
+  const [inviteToken, setInviteToken] = useState<string>(() => new URLSearchParams(window.location.search).get('invite') || '');
+  const [currentPage, setCurrentPage] = useState<NavigationPage>(() =>
+    localStorage.getItem('auth_token') && localStorage.getItem('auth_session') ? 'dashboard' : 'auth'
+  );
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('theme') === 'dark';
   });
-  const [toasts, setToasts] = useState<ToastMessage[]>([
-    { id: '1', text: 'Welcome back, Rohan! 4 new leads arrived via Website & WhatsApp.', type: 'info' },
-  ]);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -51,6 +53,10 @@ export const App: React.FC = () => {
   };
 
   const renderCurrentPage = () => {
+    // The CRM pages require a real signed-in user and a persisted workspace session.
+    if ((!localStorage.getItem('auth_token') || !localStorage.getItem('auth_session')) && currentPage !== 'auth') {
+      return <AuthPage onAuthenticated={() => setCurrentPage('dashboard')} />;
+    }
     switch (currentPage) {
       case 'dashboard':
         return <DashboardPage onNavigate={setCurrentPage} />;
@@ -69,7 +75,7 @@ export const App: React.FC = () => {
       case 'whatsapp':
         return <WhatsAppPage />;
       case 'integrations':
-        return <IntegrationsPage />;
+        return <IntegrationsPage onNavigate={setCurrentPage} />;
       case 'importexport':
         return <ImportExportPage />;
       case 'team':
@@ -79,11 +85,21 @@ export const App: React.FC = () => {
       case 'audit':
         return <AuditPage />;
       case 'auth':
-        return <AuthPage />;
+        return <AuthPage onAuthenticated={() => setCurrentPage('dashboard')} />;
       default:
         return <DashboardPage onNavigate={setCurrentPage} />;
     }
   };
+
+  if (inviteToken) {
+    return (
+      <InvitationAcceptancePage token={inviteToken} onBackToLogin={() => {
+        window.history.replaceState({}, document.title, window.location.pathname);
+        setInviteToken('');
+        setCurrentPage('auth');
+      }} />
+    );
+  }
 
   return (
     <AppShell

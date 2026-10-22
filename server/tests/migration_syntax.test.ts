@@ -62,4 +62,26 @@ describe('Database Migration & Multi-Tenant DDL Verification', () => {
     expect(content).toContain('CREATE INDEX IF NOT EXISTS idx_tasks_tenant_owner_status ON tasks(tenant_id, owner_user_id, status);');
     expect(content).toContain('CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_time ON audit_events(tenant_id, occurred_at DESC);');
   });
+
+  it('adds a defense-in-depth lockdown for Supabase public API roles', () => {
+    const accessPath = path.join(__dirname, '../src/db/migrations/003_public_api_lockdown.sql');
+    expect(fs.existsSync(accessPath)).toBe(true);
+    const content = fs.readFileSync(accessPath, 'utf-8');
+    expect(content).toContain('ENABLE ROW LEVEL SECURITY');
+    expect(content).toContain('REVOKE ALL PRIVILEGES ON TABLE public.%I FROM %I');
+    expect(content).toContain("'anon'");
+    expect(content).toContain("'authenticated'");
+    for (const table of ['leads', 'users', 'memberships', 'tenant_settings', 'whatsapp_messages']) {
+      expect(content).toContain(`'${table}'`);
+    }
+  });
+
+  it('protects invitation token storage in migration 005', () => {
+    const migrationPath = path.join(__dirname, '../src/db/migrations/005_workspace_invitations_rls.sql');
+    expect(fs.existsSync(migrationPath)).toBe(true);
+    const content = fs.readFileSync(migrationPath, 'utf-8');
+    expect(content).toContain('workspace_invitations');
+    expect(content).toContain('ENABLE ROW LEVEL SECURITY');
+    expect(content).toContain('authenticated');
+  });
 });

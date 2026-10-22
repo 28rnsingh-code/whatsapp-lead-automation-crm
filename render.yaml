@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: oneclick-autonix-crm-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci --no-audit --fund=false && npm run build:server
+    startCommand: npm run start --workspace=server
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      - key: BOOTSTRAP_ADMIN_NAME
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: PUBLIC_API_BASE_URL
+        sync: false

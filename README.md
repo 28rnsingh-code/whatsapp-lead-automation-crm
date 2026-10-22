@@ -26,15 +26,24 @@ Configure your PostgreSQL connection string in `.env` if using a live database:
 ```env
 DATABASE_URL=postgresql://postgres:password@localhost:5432/oneclick_crm
 PORT=4000
-VITE_API_URL=http://localhost:4000/api
+VITE_API_BASE_URL=/api
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_PASSWORD=replace_with_a_unique_password_at_least_12_chars
+BOOTSTRAP_ADMIN_NAME=Workspace Admin
+ENCRYPTION_KEY=replace_with_32_random_chars_or_64_hex_chars
 ```
 
 ### 3. Database Migrations
-Apply the initial schema migration defining multi-tenant tables, indexes, and relations:
+All numbered migrations run in order. Migration 003 enables row-level security and removes direct table privileges from Supabase's `anon` and `authenticated` API roles; the Express server connects server-side using the private PostgreSQL URL.
+
+Apply the schema, then bootstrap the first workspace administrator with the environment variables above:
+
 ```bash
 npm run migrate --workspace=server
 ```
-*(Migration files are located in `server/src/db/migrations/001_initial_schema.sql`)*
+*(Migration files are located in `server/src/db/migrations/`.)*
+
+After migrations complete, run `npm run seed` to create the OneClick Autonix CRM workspace and admin user. Set a unique password (at least 12 characters); never commit the private `.env` file. See [DEPLOYMENT_FREE.md](DEPLOYMENT_FREE.md) for the free-tier hosting checklist.
 
 ### 4. Running the Application
 
