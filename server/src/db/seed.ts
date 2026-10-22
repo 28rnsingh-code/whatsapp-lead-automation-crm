@@ -190,6 +190,13 @@ async function seedIsolatedTestFixtures(primaryTenantId: string, adminUserId: st
   }
 
   const adminRoleId = await ensureTestRole(secondTenantId, 'Admin');
+  const secondTenantExecutiveRoleId = await ensureTestRole(secondTenantId, 'Sales Executive');
+  await pool.query(
+    `INSERT INTO memberships (tenant_id, user_id, role_id, status)
+     VALUES ($1::uuid, $2::uuid, $3::uuid, 'active')
+     ON CONFLICT (tenant_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id, status = 'active';`,
+    [secondTenantId, adminUserId, secondTenantExecutiveRoleId]
+  );
   const managerRoleId = await ensureTestRole(primaryTenantId, 'Sales Manager');
   const executiveRoleId = await ensureTestRole(primaryTenantId, 'Sales Executive');
 

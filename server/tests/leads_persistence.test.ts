@@ -210,7 +210,7 @@ describe('Leads PostgreSQL Persistence & Tenant Isolation Tests', () => {
     const unauthRes = await request(app)
       .get(`/api/leads/${createdLeadId}`)
       .set('Authorization', `Bearer ${otherTenantToken}`)
-      .set('x-tenant-id', 'tenant_automics_labs');
+      .set('x-tenant-id', 'tenant_bring_my_bite');
 
     expect(unauthRes.status).toBe(403);
     expect(unauthRes.body.success).toBe(false);

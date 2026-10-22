@@ -178,7 +178,7 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
               {
                 value: {
                   messaging_product: 'whatsapp',
-                  metadata: { display_phone_number: '919999988888', phone_number_id: '109823475689123' },
+                  metadata: { display_phone_number: '919999988888', phone_number_id: '9876543210123' },
                   messages: [
                     {
                       from: '919876543210',
@@ -220,6 +220,8 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
         .send({
           recipientPhone: '+919876543210',
           body: 'Hello from OneClick CRM automated test',
+          leadId: 'c0000000-0000-0000-0000-000000000001',
+          idempotencyKey: `ci-outbound-${Date.now()}`,
         });
 
       expect([201, 503]).toContain(res.status);
