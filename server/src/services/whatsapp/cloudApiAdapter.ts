@@ -6,6 +6,7 @@ import {
   OutboundMessageResult,
   InboundMessageEvent,
 } from './types';
+import { appendProviderPath, resolveHttpsProviderEndpoint } from '../providerEndpoints';
 
 export class CloudApiWhatsAppAdapter implements WhatsAppProviderAdapter {
   readonly id = 'cloud_api';
@@ -78,7 +79,11 @@ export class CloudApiWhatsAppAdapter implements WhatsAppProviderAdapter {
     }
 
     try {
-      const response = await fetch(`https://graph.facebook.com/v18.0/${credentials.phoneNumberId}/messages`, {
+      const endpoint = appendProviderPath(
+        resolveHttpsProviderEndpoint('WHATSAPP_API_ENDPOINT', 'graph.facebook.com', /^\/v\d+\.\d+$/),
+        [credentials.phoneNumberId, 'messages'],
+      );
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
