@@ -1,4 +1,4 @@
-import { pool } from './index';
+import { pool, resolveDatabaseConfig } from './index';
 import { hashPassword } from '../services/authService';
 
 // Legacy identifiers retained only for fixture/fallback compatibility.
@@ -39,12 +39,14 @@ export async function seedDefaults(): Promise<SeedResult> {
 
   console.log('[Seed] Creating or verifying the CRM workspace and first admin...');
 
+  const isolatedTestDatabase = process.env.NODE_ENV === 'test' && !resolveDatabaseConfig().isBlocked;
   const tenantRes = await pool.query<{ id: string }>(
-    `INSERT INTO tenants (name, slug, status, timezone, currency, locale)
-     VALUES ($1, $2, 'active', $3, $4, $5)
+    `INSERT INTO tenants (id, name, slug, status, timezone, currency, locale)
+     VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, 'active', $4, $5, $6)
      ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()
      RETURNING id::text AS id;`,
     [
+      isolatedTestDatabase ? DEFAULT_TENANT_ID : null,
       workspaceName,
       workspaceSlug,
       process.env.DEFAULT_TIMEZONE || 'Asia/Kolkata',
@@ -57,14 +59,14 @@ export async function seedDefaults(): Promise<SeedResult> {
   // A conflict never overwrites an existing password. New accounts get the operator-supplied hash.
   const passwordHash = await hashPassword(adminPassword);
   const userRes = await pool.query<{ id: string }>(
-    `INSERT INTO users (email_normalized, display_name, password_hash, status)
-     VALUES ($1, $2, $3, 'active')
+    `INSERT INTO users (id, email_normalized, display_name, password_hash, status)
+     VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, 'active')
      ON CONFLICT (email_normalized) DO UPDATE
        SET display_name = EXCLUDED.display_name,
            password_hash = COALESCE(users.password_hash, EXCLUDED.password_hash),
            updated_at = NOW()
      RETURNING id::text AS id;`,
-    [adminEmail, adminName, passwordHash]
+    [isolatedTestDatabase ? DEFAULT_USER_ID : null, adminEmail, adminName, passwordHash]
   );
   const userId = userRes.rows[0].id;
 
@@ -131,13 +133,99 @@ export async function seedDefaults(): Promise<SeedResult> {
 
   await pool.query(
     `INSERT INTO tenant_subscriptions (tenant_id, plan_id, plan_name, status, billing_provider)
-     VALUES ($1::uuid, 'starter', 'Free Starter', 'active', 'mock')
+     VALUES ($1::uuid, 'starter', 'Free Starter', 'active', 'manual')
      ON CONFLICT (tenant_id) DO NOTHING;`,
     [tenantId]
   );
 
+  if (isolatedTestDatabase) {
+    await seedIsolatedTestFixtures(tenantId, userId);
+  }
+
   console.log(`[Seed] Workspace ready. Tenant ID: ${tenantId}; stages: ${stages.length}`);
   return { tenantId, userId, stages };
+}
+
+
+/**
+ * Deterministic synthetic identities and records are created only when the operator
+ * explicitly runs the seed against a dedicated *_test database. Never called in runtime startup.
+ */
+async function seedIsolatedTestFixtures(primaryTenantId: string, adminUserId: string): Promise<void> {
+  const secondTenantId = 'a0000000-0000-0000-0000-000000000002';
+  await pool.query(
+    `INSERT INTO tenants (id, name, slug, status, timezone, currency, locale)
+     VALUES ($1::uuid, 'CRM QA Isolation Workspace', 'crm-qa-isolation-workspace', 'active', 'Asia/Kolkata', 'INR', 'en-IN')
+     ON CONFLICT (id) DO UPDATE SET status = 'active', updated_at = NOW();`,
+    [secondTenantId]
+  );
+
+  const rolePermissions: Record<string, string[]> = {
+    Admin: ['leads:read', 'leads:write', 'leads:delete', 'pipeline:manage', 'reports:view', 'team:manage', 'settings:manage', 'audit:read', 'integrations:manage'],
+    'Sales Manager': ['leads:read', 'leads:write', 'pipeline:manage', 'reports:view'],
+    'Sales Executive': ['leads:read', 'leads:write'],
+    'Read-only': ['leads:read', 'reports:view'],
+  };
+
+  async function ensureTestRole(tenantId: string, roleName: string): Promise<string> {
+    const found = await pool.query<{ id: string }>(
+      'SELECT id::text AS id FROM roles WHERE tenant_id = $1::uuid AND name = $2 LIMIT 1;',
+      [tenantId, roleName]
+    );
+    let roleId = found.rows[0]?.id;
+    if (!roleId) {
+      const inserted = await pool.query<{ id: string }>(
+        'INSERT INTO roles (tenant_id, name, description, is_system) VALUES ($1::uuid, $2, $3, true) RETURNING id::text AS id;',
+        [tenantId, roleName, `Isolated CI fixture role: ${roleName}`]
+      );
+      roleId = inserted.rows[0].id;
+    }
+    for (const permission of rolePermissions[roleName] || []) {
+      await pool.query(
+        'INSERT INTO role_permissions (role_id, permission_key) VALUES ($1::uuid, $2) ON CONFLICT DO NOTHING;',
+        [roleId, permission]
+      );
+    }
+    return roleId;
+  }
+
+  const adminRoleId = await ensureTestRole(secondTenantId, 'Admin');
+  const managerRoleId = await ensureTestRole(primaryTenantId, 'Sales Manager');
+  const executiveRoleId = await ensureTestRole(primaryTenantId, 'Sales Executive');
+
+  const fixturePasswordHash = await hashPassword('CRM_Test_Only#2026');
+  const fixtures = [
+    { id: 'b0000000-0000-0000-0000-000000000002', email: 'riya@bringmybite.in', name: 'QA Sales Manager', tenantId: primaryTenantId, roleId: managerRoleId, membershipStatus: 'active', userStatus: 'active' },
+    { id: 'b0000000-0000-0000-0000-000000000003', email: 'suspended@bringmybite.in', name: 'QA Suspended Member', tenantId: primaryTenantId, roleId: executiveRoleId, membershipStatus: 'suspended', userStatus: 'active' },
+    { id: 'b0000000-0000-0000-0000-000000000004', email: 'other@competitor.in', name: 'QA Isolation Admin', tenantId: secondTenantId, roleId: adminRoleId, membershipStatus: 'active', userStatus: 'active' },
+  ];
+
+  for (const fixture of fixtures) {
+    await pool.query(
+      `INSERT INTO users (id, email_normalized, display_name, password_hash, status)
+       VALUES ($1::uuid, $2, $3, $4, $5)
+       ON CONFLICT (id) DO UPDATE
+         SET email_normalized = EXCLUDED.email_normalized,
+             display_name = EXCLUDED.display_name,
+             password_hash = EXCLUDED.password_hash,
+             status = EXCLUDED.status,
+             updated_at = NOW();`,
+      [fixture.id, fixture.email, fixture.name, fixturePasswordHash, fixture.userStatus]
+    );
+    await pool.query(
+      `INSERT INTO memberships (tenant_id, user_id, role_id, status)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4)
+       ON CONFLICT (tenant_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id, status = EXCLUDED.status;`,
+      [fixture.tenantId, fixture.id, fixture.roleId, fixture.membershipStatus]
+    );
+  }
+
+  await pool.query(
+    `INSERT INTO tasks (tenant_id, title, task_type, owner_user_id, due_at, timezone, priority, status, created_by)
+     SELECT $1::uuid, 'QA seeded follow-up', 'Call', $2::uuid, NOW() + INTERVAL '1 day', 'Asia/Kolkata', 'Medium', 'Pending', $2::uuid
+      WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE tenant_id = $1::uuid AND title = 'QA seeded follow-up');`,
+    [primaryTenantId, adminUserId]
+  );
 }
 
 if (require.main === module) {
