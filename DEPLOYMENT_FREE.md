@@ -47,6 +47,7 @@ To initialize a local database, run `npm run migrate`, then set `BOOTSTRAP_ADMIN
 ## Security and release gates
 
 - Never commit `.env`, database URLs, JWT secrets, encryption keys, provider tokens, or customer data.
+- Keep the backend `DATABASE_URL` private. Migration 003 enables RLS and revokes table access from Supabase `anon`/`authenticated` roles; do not add public RLS policies to customer tables unless a deliberate, tenant-scoped direct-client architecture is designed and tested.
 - Production login and workspace lookup use database records; the in-memory demonstration identities are not used in production.
 - Password recovery emails are not implemented yet. The app must not claim a reset email was dispatched.
 - Live Meta WhatsApp, Gupshup, AI providers, payment gateway, and webhook behavior require credentials and provider-side configuration. Mock adapters are not proof of a live integration.
