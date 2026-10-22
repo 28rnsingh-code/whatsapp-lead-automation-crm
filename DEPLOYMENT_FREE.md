@@ -4,7 +4,7 @@ This repository contains deployment configuration, not proof of a live deploymen
 
 ## Architecture
 
-- **Frontend:** Vercel static Vite site, rooted at `client`, build command `npm run build`, output directory `dist`.
+- **Frontend:** Vercel static Vite site using root-level `vercel.json`; build command `npm run build:client`, output `client/dist`.
 - **API:** Render web service defined in `render.yaml`, explicitly set to the free plan.
 - **Database:** A separate Supabase project on the Free plan. Existing projects are not to be paused or deleted to make room.
 
@@ -16,33 +16,30 @@ The API and frontend are separate services. The app is not considered live until
 2. Set `DATABASE_URL` to the new CRM Supabase project's Postgres connection string (use the connection method shown in that project's dashboard; keep it private). Supabase names its database `postgres`; the migration preflight allows that name only when the hostname is an explicit Supabase direct/pooler endpoint, and continues to block local/default postgres targets.
 3. Set `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` (unique, at least 12 characters), and optionally `BOOTSTRAP_ADMIN_NAME`.
 4. Set `ENCRYPTION_KEY` to a randomly generated 32-character key or 64-character hex key. Never use a sample key or publish it.
-5. Deploy the API, verify `/api/health`, and use the private environment to run database migrations, then seed the initial administrator:
-   - `npm run migrate`
-   - `npm run seed`
-   The first deployment can be considered configured only after both commands succeed against the intended CRM database.
+5. In the Render service shell, run `npm run migrate` and then `npm run seed` against the intended CRM database. Do this only once the separate Free Supabase project exists and `DATABASE_URL` has been checked. Confirm both commands succeed before treating the backend as configured.
+6. Set `CORS_ORIGINS` and `FRONTEND_URL` to the exact deployed frontend origin (scheme + hostname, no path), for example `https://YOUR-APP.vercel.app`. Set `PUBLIC_API_BASE_URL` to the public Render API origin (for example `https://YOUR-API.onrender.com`, without `/api`) so webhook and invitation URLs use HTTPS.
 
 The seed operation is idempotent. It creates a separate `oneclick-autonix-crm` workspace and default pipeline stages. It will not overwrite an existing non-null password.
 
 ## Frontend setup
 
-1. In Vercel, import the repository and set Root Directory to `client`.
-2. Framework preset: Vite; Build Command: `npm run build`; Output Directory: `dist`.
-3. Set `VITE_API_BASE_URL` in Production to the API base URL ending in `/api`, for example `https://YOUR-API.onrender.com/api`. Replace the placeholder with the actual Render URL.
-4. Set the API's `CORS_ORIGINS` to the exact deployed frontend origin (scheme + hostname, no path), for example `https://YOUR-APP.vercel.app`.
-5. Redeploy both services after environment variables change.
+1. In Vercel, import the repository and leave **Root Directory** at the repository root (`.`) so the root monorepo lockfile and `vercel.json` are used.
+2. Vercel uses `npm ci --no-audit --fund=false`, `npm run build:client`, and output directory `client/dist` from `vercel.json`.
+3. Set `VITE_API_BASE_URL` in Production to the deployed API base URL ending in `/api`, for example `https://YOUR-API.onrender.com/api`. Replace the placeholder with the actual Render URL.
+4. After both URLs are correct, redeploy API and frontend on the free plans only. No paid upgrade is part of this process.
 
 ## Local development
 
 ```bash
-npm ci
+npm ci --no-audit --fund=false
 cp .env.example .env
-# Set DATABASE_URL, JWT_SECRET, and ENCRYPTION_KEY before database-backed use
+# Set DATABASE_URL, JWT_SECRET, ENCRYPTION_KEY and bootstrap admin variables before database-backed use
 npm run build
 npm test
 npm run dev:all
 ```
 
-To initialize a local database, run `npm run migrate`, then set `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`, and optionally `BOOTSTRAP_ADMIN_NAME` in the private `.env` file and run `npm run seed`.
+To initialize a local database, run `npm run migrate`, set `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` and optionally `BOOTSTRAP_ADMIN_NAME` in private `.env`, then run `npm run seed`.
 
 ## Security and release gates
 
@@ -51,9 +48,9 @@ To initialize a local database, run `npm run migrate`, then set `BOOTSTRAP_ADMIN
 - Production login and workspace lookup use database records; the in-memory demonstration identities are not used in production.
 - Password recovery emails are not implemented yet. The app must not claim a reset email was dispatched.
 - Live Meta WhatsApp, Gupshup, AI providers, payment gateway, and webhook behavior require credentials and provider-side configuration. Mock adapters are not proof of a live integration.
-- Run the GitHub Actions build/test check, verify migration/seed against the new CRM database, verify login and core CRUD in the deployed app, then test WhatsApp/AI integrations only after keys and consent/template prerequisites are configured.
+- Run the GitHub Actions build/test check, verify migrations and seeding against the new CRM database, verify login and core CRUD in the deployed app, then test WhatsApp/AI integrations only after keys and consent/template prerequisites are configured.
 - Do not mark the application fully functional until these acceptance checks pass.
 
-
 ## Team invitations and audit
+
 The Team screen creates a seven-day, single-use invitation link. Email delivery is not configured; copy the link and share it privately. Successful authenticated write operations are recorded in `audit_events`; only workspace administrators can read and export the workspace audit trail.

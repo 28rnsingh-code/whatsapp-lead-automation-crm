@@ -3,7 +3,7 @@ services:
     name: oneclick-autonix-crm-api
     runtime: node
     plan: free
-    buildCommand: npm ci && npm run build:server
+    buildCommand: npm ci --no-audit --fund=false && npm run build:server
     startCommand: npm run start --workspace=server
     healthCheckPath: /api/health
     autoDeploy: false
