@@ -135,17 +135,19 @@ export function resolveDatabaseConfig(): DatabaseConfig {
     };
   }
 
-  // In production, missing persistence is a startup error. Never silently select a local/demo database.
+  // No non-test runtime may guess a database endpoint or silently connect to a shared local database.
   const configuredUrl = process.env.DATABASE_URL?.trim();
-  if (process.env.NODE_ENV === 'production' && !configuredUrl) {
-    throw new Error('CRITICAL CONFIGURATION ERROR: DATABASE_URL must be set in production.');
+  if (!configuredUrl) {
+    throw new Error('CRITICAL CONFIGURATION ERROR: Set DATABASE_URL to a newly provisioned, isolated CRM database before starting the server.');
+  }
+  const parsed = new URL(configuredUrl);
+  if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !parsed.hostname || !parsed.pathname.replace(/^\\//, '')) {
+    throw new Error('CRITICAL CONFIGURATION ERROR: DATABASE_URL is not a valid PostgreSQL connection URL.');
   }
 
-  // Local fallback exists only to support an explicit developer setup; it is never selected in production.
-  const connStr = configuredUrl || 'postgresql://postgres:postgres_password@localhost:5432/oneclick_crm';
   return {
-    connectionString: connStr,
-    databaseName: parseDatabaseName(connStr),
+    connectionString: configuredUrl,
+    databaseName: parseDatabaseName(configuredUrl),
     isTestEnvironment: false,
     isBlocked: false,
   };
