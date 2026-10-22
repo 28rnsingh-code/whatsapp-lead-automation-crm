@@ -25,6 +25,8 @@ export interface AuthTokenPayload {
   defaultTenantId?: string;
   iat?: number;
   exp?: number;
+  jti?: string;
+  sessionVersion?: number;
 }
 
 /**
@@ -50,7 +52,7 @@ export function signToken(
   payload: Omit<AuthTokenPayload, 'iat' | 'exp'>,
   expiresIn: string = process.env.JWT_EXPIRES_IN || '24h'
 ): string {
-  return jwt.sign(payload, JWT_SECRET, {
+  return jwt.sign({ ...payload, jti: payload.jti || crypto.randomUUID() }, JWT_SECRET, {
     algorithm: 'HS256',
     expiresIn: expiresIn as any,
   });
