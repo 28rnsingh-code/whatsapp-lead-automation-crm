@@ -22,3 +22,23 @@ export const loginRateLimiter = rateLimit({
     });
   },
 });
+
+
+/** Separate rate limit for recovery endpoints to resist token/email enumeration abuse. */
+export const passwordResetRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'test' ? 20 : 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    const requestId = req.requestId || 'req_unknown';
+    res.status(429).json({
+      success: false,
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many account recovery attempts. Please try again later.',
+        requestId,
+      },
+    });
+  },
+});
