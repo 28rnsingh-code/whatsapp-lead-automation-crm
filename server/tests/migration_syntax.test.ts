@@ -75,4 +75,13 @@ describe('Database Migration & Multi-Tenant DDL Verification', () => {
       expect(content).toContain(`'${table}'`);
     }
   });
+
+  it('protects invitation token storage in migration 005', () => {
+    const migrationPath = path.join(__dirname, '../src/db/migrations/005_workspace_invitations_rls.sql');
+    expect(fs.existsSync(migrationPath)).toBe(true);
+    const content = fs.readFileSync(migrationPath, 'utf-8');
+    expect(content).toContain('workspace_invitations');
+    expect(content).toContain('ENABLE ROW LEVEL SECURITY');
+    expect(content).toContain('authenticated');
+  });
 });

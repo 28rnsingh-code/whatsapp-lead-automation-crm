@@ -53,3 +53,7 @@ To initialize a local database, run `npm run migrate`, then set `BOOTSTRAP_ADMIN
 - Live Meta WhatsApp, Gupshup, AI providers, payment gateway, and webhook behavior require credentials and provider-side configuration. Mock adapters are not proof of a live integration.
 - Run the GitHub Actions build/test check, verify migration/seed against the new CRM database, verify login and core CRUD in the deployed app, then test WhatsApp/AI integrations only after keys and consent/template prerequisites are configured.
 - Do not mark the application fully functional until these acceptance checks pass.
+
+
+## Team invitations and audit
+The Team screen creates a seven-day, single-use invitation link. Email delivery is not configured; copy the link and share it privately. Successful authenticated write operations are recorded in `audit_events`; only workspace administrators can read and export the workspace audit trail.
