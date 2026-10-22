@@ -75,7 +75,7 @@ export const App: React.FC = () => {
       case 'whatsapp':
         return <WhatsAppPage />;
       case 'integrations':
-        return <IntegrationsPage />;
+        return <IntegrationsPage onNavigate={setCurrentPage} />;
       case 'importexport':
         return <ImportExportPage />;
       case 'team':

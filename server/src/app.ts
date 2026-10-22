@@ -14,6 +14,7 @@ import whatsappRoutes from './routes/whatsapp';
 import aiRoutes from './routes/ai';
 import reportRoutes from './routes/reports';
 import billingRoutes from './routes/billing';
+import integrationsRoutes from './routes/integrations';
 
 export function createApp(): Express {
   const app = express();
@@ -51,6 +52,7 @@ export function createApp(): Express {
   app.use('/api/ai', aiRoutes);
   app.use('/api/reports', reportRoutes);
   app.use('/api/billing', billingRoutes);
+  app.use('/api/integrations', integrationsRoutes);
   app.use('/api/import', importExportRoutes);
   app.use('/api', importExportRoutes); // also mounts /api/export/leads
 

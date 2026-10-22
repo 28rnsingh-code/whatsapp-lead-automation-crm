@@ -583,3 +583,38 @@ export async function changePlanApi(planId: string): Promise<any> {
 
 
 
+
+export interface IntegrationStatusResponse {
+  tenantSlug: string;
+  webhook: {
+    configured: boolean;
+    secretMasked: string;
+    endpoint: string;
+    status: string;
+  };
+  whatsapp: {
+    configured: boolean;
+    provider: string;
+    status: string;
+  };
+  ai: {
+    configured: boolean;
+    provider: string;
+    status: string;
+    mode: string;
+  };
+}
+
+export async function fetchIntegrationStatusApi(): Promise<IntegrationStatusResponse> {
+  return apiRequest<IntegrationStatusResponse>('/integrations/status', { method: 'GET' });
+}
+
+export async function rotateWebsiteWebhookApi(): Promise<{
+  secret: string;
+  tenantSlug: string;
+  webhookUrl: string;
+  secretDisplayedOnce: boolean;
+  note: string;
+}> {
+  return apiRequest('/integrations/website-webhook/rotate', { method: 'POST', body: JSON.stringify({}) });
+}
