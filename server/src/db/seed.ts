@@ -18,10 +18,18 @@ export interface SeedResult {
  * Run migrations before running this command.
  */
 export async function seedDefaults(): Promise<SeedResult> {
+  const workspaceName = process.env.WORKSPACE_NAME?.trim();
+  const workspaceSlug = process.env.WORKSPACE_SLUG?.trim().toLowerCase();
   const adminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
   const adminPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD;
   const adminName = process.env.BOOTSTRAP_ADMIN_NAME?.trim() || adminEmail?.split('@')[0] || '';
 
+  if (!workspaceName || workspaceName.length > 255) {
+    throw new Error('Set WORKSPACE_NAME to the intended CRM workspace name before seeding.');
+  }
+  if (!workspaceSlug || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(workspaceSlug) || workspaceSlug.length > 100) {
+    throw new Error('Set WORKSPACE_SLUG to a unique lowercase URL-safe slug before seeding.');
+  }
   if (!adminEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) {
     throw new Error('Set BOOTSTRAP_ADMIN_EMAIL to a valid email before seeding.');
   }
@@ -33,9 +41,16 @@ export async function seedDefaults(): Promise<SeedResult> {
 
   const tenantRes = await pool.query<{ id: string }>(
     `INSERT INTO tenants (name, slug, status, timezone, currency, locale)
-     VALUES ('OneClick Autonix CRM', 'oneclick-autonix-crm', 'active', 'Asia/Kolkata', 'INR', 'en-IN')
-     ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
-     RETURNING id::text AS id;`
+     VALUES ($1, $2, 'active', $3, $4, $5)
+     ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()
+     RETURNING id::text AS id;`,
+    [
+      workspaceName,
+      workspaceSlug,
+      process.env.DEFAULT_TIMEZONE || 'Asia/Kolkata',
+      process.env.DEFAULT_CURRENCY || 'INR',
+      process.env.DEFAULT_LOCALE || 'en-IN',
+    ]
   );
   const tenantId = tenantRes.rows[0].id;
 
@@ -46,8 +61,8 @@ export async function seedDefaults(): Promise<SeedResult> {
      VALUES ($1, $2, $3, 'active')
      ON CONFLICT (email_normalized) DO UPDATE
        SET display_name = EXCLUDED.display_name,
-           status = 'active',
-           password_hash = COALESCE(users.password_hash, EXCLUDED.password_hash)
+           password_hash = COALESCE(users.password_hash, EXCLUDED.password_hash),
+           updated_at = NOW()
      RETURNING id::text AS id;`,
     [adminEmail, adminName, passwordHash]
   );
