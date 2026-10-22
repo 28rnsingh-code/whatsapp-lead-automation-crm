@@ -220,6 +220,50 @@ async function seedIsolatedTestFixtures(primaryTenantId: string, adminUserId: st
     );
   }
 
+  const initialStage = await pool.query<{ id: string }>(
+    'SELECT id::text AS id FROM pipeline_stages WHERE tenant_id = $1::uuid ORDER BY sort_order LIMIT 1;',
+    [primaryTenantId]
+  );
+
+  await pool.query(
+    `INSERT INTO leads (
+       id, tenant_id, name, phone_raw, phone_normalized, company_name, source,
+       stage_id, qualification_status, owner_user_id, deal_value_minor_units, currency,
+       next_action, consent_status, notes, created_by
+     ) VALUES (
+       'c0000000-0000-0000-0000-000000000001'::uuid, $1::uuid, 'CRM QA Opted-In Lead',
+       '+919876543210', '+919876543210', 'CRM Test Company', 'Website', $2::uuid,
+       'Qualified', $3::uuid, 2500000, 'INR', 'Call', 'Consented',
+       'Synthetic CI fixture with explicit consent for provider-mocked messaging.', $3::uuid
+     )
+     ON CONFLICT (id) DO UPDATE SET
+       tenant_id = EXCLUDED.tenant_id,
+       stage_id = EXCLUDED.stage_id,
+       consent_status = EXCLUDED.consent_status,
+       updated_at = NOW();`,
+    [primaryTenantId, initialStage.rows[0]?.id || null, adminUserId]
+  );
+
+  await pool.query(
+    `INSERT INTO tenant_settings (tenant_id, category, config_data, updated_by, updated_at)
+     VALUES ($1::uuid, 'whatsapp', $2::jsonb, $3::uuid, NOW())
+     ON CONFLICT (tenant_id, category)
+     DO UPDATE SET config_data = EXCLUDED.config_data, updated_by = EXCLUDED.updated_by, updated_at = NOW();`,
+    [
+      primaryTenantId,
+      JSON.stringify({
+        provider: 'mock',
+        status: 'test_mode',
+        phoneNumberId: '9876543210123',
+        businessAccountId: '1234567890123',
+        accessToken: 'test_token_only_for_ci',
+        appSecret: 'unit-test-whatsapp-app-secret',
+        webhookVerifyToken: 'oneclick_verify',
+      }),
+      adminUserId,
+    ]
+  );
+
   await pool.query(
     `INSERT INTO tasks (tenant_id, title, task_type, owner_user_id, due_at, timezone, priority, status, created_by)
      SELECT $1::uuid, 'QA seeded follow-up', 'Call', $2::uuid, NOW() + INTERVAL '1 day', 'Asia/Kolkata', 'Medium', 'Pending', $2::uuid
