@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { RoleName } from '../types';
 import { pool, resolveDatabaseConfig } from '../db';
+import { DEFAULT_TENANT_ID } from '../db/seed';
 
 export interface TenantContext {
   tenantId: string;
@@ -134,11 +135,18 @@ export function requireTenant(allowedRoles?: RoleName[]) {
     }
     const targetTenantId = rawTenantHeader.trim();
     const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    const testFixtureMode = process.env.NODE_ENV === 'test' && resolveDatabaseConfig().isBlocked;
+    const databaseConfig = resolveDatabaseConfig();
+    const testFixtureMode = process.env.NODE_ENV === 'test' && databaseConfig.isBlocked;
+    const testDatabaseMode = process.env.NODE_ENV === 'test' && !databaseConfig.isBlocked;
+    const testTenantAliases: Record<string, string> = {
+      tenant_bring_my_bite: DEFAULT_TENANT_ID,
+      tenant_automics_labs: 'a0000000-0000-0000-0000-000000000002',
+    };
+    const dbTenantId = testDatabaseMode ? (testTenantAliases[targetTenantId] || targetTenantId) : targetTenantId;
 
-    // Friendly/demo tenant slugs are accepted only by isolated, database-blocked tests.
-    // Normal development and production require the real persistent tenant UUID.
-    if (!testFixtureMode && !uuidPattern.test(targetTenantId)) {
+    // Symbolic workspace aliases are only valid in an isolated test runtime.
+    // Development and production must present the actual database UUID.
+    if (!uuidPattern.test(targetTenantId) && !(testFixtureMode || (testDatabaseMode && testTenantAliases[targetTenantId]))) {
       res.status(403).json({
         success: false,
         error: {
@@ -181,7 +189,7 @@ export function requireTenant(allowedRoles?: RoleName[]) {
             WHERE m.tenant_id = $1::uuid AND m.user_id = $2::uuid
             GROUP BY r.name, m.status
             LIMIT 1`,
-          [targetTenantId, req.userId]
+          [dbTenantId, req.userId]
         );
         const row = result.rows[0];
         if (row) {
@@ -260,7 +268,7 @@ export function requireTenant(allowedRoles?: RoleName[]) {
 
     // 8. Attach validated tenant context to the request
     req.tenantContext = {
-      tenantId: targetTenantId,
+      tenantId: testFixtureMode ? targetTenantId : dbTenantId,
       role: membership.role,
       permissions: membership.permissions,
     };
