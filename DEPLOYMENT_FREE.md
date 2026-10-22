@@ -46,7 +46,8 @@ To initialize a local database, run `npm run migrate`, set `BOOTSTRAP_ADMIN_EMAI
 - Never commit `.env`, database URLs, JWT secrets, encryption keys, provider tokens, or customer data.
 - Keep the backend `DATABASE_URL` private. Migration 003 enables RLS and revokes table access from Supabase `anon`/`authenticated` roles; do not add public RLS policies to customer tables unless a deliberate, tenant-scoped direct-client architecture is designed and tested.
 - Production login and workspace lookup use database records; the in-memory demonstration identities are not used in production.
-- Password recovery emails are not implemented yet. The app must not claim a reset email was dispatched.
+- Password recovery emails are not implemented yet; the UI reports that accurately and does not claim a reset email was sent.
+- Paid plan checkout remains disabled on database-backed workspaces until a real billing provider is configured. The mock adapter must not activate Growth/Enterprise plans in a live workspace.
 - Live Meta WhatsApp, Gupshup, AI providers, payment gateway, and webhook behavior require credentials and provider-side configuration. Mock adapters are not proof of a live integration.
 - Run the GitHub Actions build/test check, verify migrations and seeding against the new CRM database, verify login and core CRUD in the deployed app, then test WhatsApp/AI integrations only after keys and consent/template prerequisites are configured.
 - Do not mark the application fully functional until these acceptance checks pass.

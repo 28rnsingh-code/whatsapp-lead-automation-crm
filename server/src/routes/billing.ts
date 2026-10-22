@@ -130,6 +130,18 @@ router.post('/change-plan', requireAuth, requireTenant(['Admin']), async (req: R
   const selected = PLAN_DEFINITIONS[planId as PlanTier];
   const dbConfig = resolveDatabaseConfig();
 
+  if (!dbConfig.isBlocked && planId !== 'starter') {
+    res.status(501).json({
+      success: false,
+      error: {
+        code: 'BILLING_PROVIDER_NOT_CONFIGURED',
+        message: 'Paid plan checkout is not configured. Your subscription has not been changed. Contact the workspace administrator.',
+        requestId,
+      },
+    });
+    return;
+  }
+
   if (dbConfig.isBlocked) {
     const updated: TenantSubscriptionInfo = {
       tenantId: rawTenantId,
