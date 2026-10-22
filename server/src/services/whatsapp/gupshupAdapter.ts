@@ -5,6 +5,7 @@ import {
   OutboundMessageResult,
   InboundMessageEvent,
 } from './types';
+import { resolveHttpsProviderEndpoint } from '../providerEndpoints';
 
 export class GupshupWhatsAppAdapter implements WhatsAppProviderAdapter {
   readonly id = 'gupshup';
@@ -40,7 +41,8 @@ export class GupshupWhatsAppAdapter implements WhatsAppProviderAdapter {
     }
 
     try {
-      const response = await fetch('https://api.gupshup.io/sm/api/v1/msg', {
+      const endpoint = resolveHttpsProviderEndpoint('GUPSHUP_API_ENDPOINT', 'api.gupshup.io', '/sm/api/v1/msg');
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
