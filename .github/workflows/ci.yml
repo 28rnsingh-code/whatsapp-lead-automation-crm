@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "hardening/**"
+      - "qa/**"
   pull_request:
   workflow_dispatch:
 
@@ -34,5 +35,7 @@ jobs:
         run: npm ci --no-audit --fund=false
       - name: Build server and client
         run: npm run build
+      - name: Run code quality checks
+        run: npm run lint
       - name: Run automated tests
         run: npm test
