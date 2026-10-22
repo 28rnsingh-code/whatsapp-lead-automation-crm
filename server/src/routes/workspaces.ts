@@ -97,7 +97,7 @@ router.get('/', requireAuth, async (req: Request, res: Response): Promise<void> 
 
 // Get the active workspace after requireTenant has checked membership.
 router.get('/current', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
-  if (shouldUseDatabaseMemberships()) {
+  if (!shouldUseFixtureWorkspaces()) {
     try {
       const result = await pool.query(
         `${DB_WORKSPACE_SELECT}
