@@ -32,7 +32,7 @@ const VERIFIED_MEMBERSHIPS: MembershipRecord[] = [
     userId: 'user_rohan_singh',
     role: 'Admin',
     status: 'active',
-    permissions: ['leads:read', 'leads:write', 'leads:delete', 'pipeline:manage', 'reports:view', 'team:manage'],
+    permissions: ['leads:read', 'leads:write', 'leads:delete', 'pipeline:manage', 'reports:view', 'team:manage', 'settings:manage', 'audit:read', 'integrations:manage'],
   },
   {
     tenantId: 'tenant_automics_labs',
@@ -46,7 +46,7 @@ const VERIFIED_MEMBERSHIPS: MembershipRecord[] = [
     userId: 'user_other_tenant',
     role: 'Admin',
     status: 'active',
-    permissions: ['leads:read', 'leads:write', 'leads:delete'],
+    permissions: ['leads:read', 'leads:write', 'leads:delete', 'pipeline:manage', 'reports:view', 'team:manage', 'settings:manage', 'audit:read', 'integrations:manage'],
   },
   {
     tenantId: 'tenant_bring_my_bite',
@@ -71,6 +71,37 @@ const VERIFIED_MEMBERSHIPS: MembershipRecord[] = [
  * 2. The user must have a verified active membership record for the requested tenant.
  * 3. Cross-tenant or unauthorized requests are strictly rejected with 403.
  */
+function requiredPermissionForRequest(req: Request): string | null {
+  const path = req.originalUrl.split('?')[0].replace(/\\/+$/, '') || '/';
+  const method = req.method.toUpperCase();
+  if (path.startsWith('/api/leads')) {
+    if (method === 'GET') return 'leads:read';
+    if (method === 'POST') return 'leads:write';
+    if (method === 'DELETE') return 'leads:delete';
+    if (method === 'PATCH' || method === 'PUT') return 'leads:write';
+  }
+  if (path.startsWith('/api/contacts') || path.startsWith('/api/tasks')) {
+    if (method === 'GET') return 'leads:read';
+    if (method === 'DELETE') return 'leads:delete';
+    if (['POST', 'PATCH', 'PUT'].includes(method)) return 'leads:write';
+  }
+  if (path.startsWith('/api/pipeline')) return method === 'GET' ? 'leads:read' : 'pipeline:manage';
+  if (path.startsWith('/api/reports') || path.startsWith('/api/dashboard')) return 'reports:view';
+  if (path.startsWith('/api/audit')) return 'audit:read';
+  if (path.startsWith('/api/team')) return method === 'GET' ? 'team:manage' : 'team:manage';
+  if (path.startsWith('/api/workspaces')) return method === 'GET' ? 'leads:read' : 'team:manage';
+  if (path.startsWith('/api/integrations')) return 'integrations:manage';
+  if (path.startsWith('/api/whatsapp')) {
+    if (path.includes('/messages')) return method === 'GET' ? 'leads:read' : 'leads:write';
+    return 'integrations:manage';
+  }
+  if (path.startsWith('/api/ai')) return 'settings:manage';
+  if (path.startsWith('/api/billing')) return 'settings:manage';
+  if (path.startsWith('/api/import')) return method === 'GET' ? 'leads:read' : 'leads:write';
+  if (path.startsWith('/api/export')) return 'leads:read';
+  return null;
+}
+
 export function requireTenant(allowedRoles?: RoleName[]) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const requestId = req.requestId || 'req_unknown';
@@ -212,7 +243,22 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       return;
     }
 
-    // 7. Attach validated tenant context to the request
+    // 7. Enforce server-side permissions for the protected resource and HTTP method.
+    const requiredPermission = requiredPermissionForRequest(req);
+    if (requiredPermission && !membership.permissions.includes(requiredPermission)) {
+      res.status(403).json({
+        success: false,
+        error: {
+          code: 'INSUFFICIENT_PERMISSIONS',
+          message: 'Your workspace role does not permit this action.',
+          details: { requiredPermission },
+          requestId,
+        },
+      });
+      return;
+    }
+
+    // 8. Attach validated tenant context to the request
     req.tenantContext = {
       tenantId: targetTenantId,
       role: membership.role,
