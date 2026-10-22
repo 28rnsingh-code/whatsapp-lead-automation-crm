@@ -272,7 +272,9 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
          deal_value_minor_units, currency, next_action, consent_status, notes,
          created_by
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, 'In Review', $9, $10, 'INR', $11, 'Consented', $12, $13
+         $1, $2, $3, $4, $5, $6, $7, $8, 'In Review', $9, $10,
+         (SELECT currency FROM tenants WHERE id = $1::uuid),
+         $11, 'Consented', $12, $13
        )
        RETURNING *;`,
       [
@@ -397,7 +399,7 @@ router.get('/:id', requireAuth, requireTenant(), async (req: Request, res: Respo
          COALESCE(ps.color_token, '#155eef') as "stageColor",
          l.qualification_status as "qualificationStatus",
          l.owner_user_id as "ownerUserId",
-         COALESCE(u.display_name, 'Rohan Singh') as "ownerName",
+         COALESCE(u.display_name, 'Unassigned') as "ownerName",
          l.deal_value_minor_units as "dealValueMinorUnits",
          l.currency,
          l.next_action as "nextAction",
@@ -641,7 +643,7 @@ router.patch('/:id', requireAuth, requireTenant(), async (req: Request, res: Res
       stageColor: targetStageColor || '#155eef',
       qualificationStatus: updated.qualification_status,
       ownerUserId: updated.owner_user_id || undefined,
-      ownerName: 'Rohan Singh',
+      ownerName: created.owner_user_id ? undefined : 'Unassigned',
       dealValueMinorUnits: Number(updated.deal_value_minor_units),
       currency: updated.currency,
       nextAction: updated.next_action,
@@ -755,7 +757,7 @@ router.post('/:id/activities', requireAuth, requireTenant(), async (req: Request
       success: true,
       data: {
         ...insertResult.rows[0],
-        actorName: 'Rohan Singh',
+        actorName: ownerUserId ? (req.userEmail || 'Workspace member') : 'System',
       },
       meta: { requestId },
     });
