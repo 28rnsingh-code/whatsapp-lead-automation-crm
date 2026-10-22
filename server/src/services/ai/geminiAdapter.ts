@@ -44,7 +44,16 @@ export class GeminiAdapter implements AiProviderAdapter {
     const { incomingMessage, leadName, config } = params;
     const targetModel = config.model || 'gemini-1.5-flash';
 
-    if (config.apiKey && (config.apiKey.startsWith('test_') || config.apiKey.includes('mock'))) {
+    if (!config.apiKey?.trim()) {
+      return {
+        success: false,
+        confidence: 0,
+        model: targetModel,
+        error: 'Gemini API key is required.',
+      };
+    }
+
+    if (config.apiKey.startsWith('test_') || config.apiKey.includes('mock')) {
       return {
         success: true,
         replyText: `Hello ${leadName || 'valued customer'}! Thanks for contacting us. We received your note: "${incomingMessage}". Let us assist you with that today.`,
