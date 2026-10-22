@@ -100,11 +100,15 @@ router.get('/subscription', requireAuth, requireTenant(), async (req: Request, r
 
     res.json({ success: true, data: result.rows[0], meta: { requestId } });
   } catch (error: any) {
-    res.json({
-      success: true,
-      data: IN_MEMORY_SUBSCRIPTIONS.tenant_bring_my_bite,
-      meta: { requestId },
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database is temporarily unavailable. Please retry shortly.',
+        requestId: requestId,
+      },
     });
+    return;
   }
 });
 

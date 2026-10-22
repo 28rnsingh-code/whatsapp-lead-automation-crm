@@ -142,15 +142,15 @@ router.get('/config', requireAuth, requireTenant(), async (req: Request, res: Re
       meta: { requestId },
     });
   } catch (error: any) {
-    res.json({
-      success: true,
-      data: {
-        config: maskCredentials({ provider: 'mock', status: 'unconfigured' }),
-        supportedProviders: getAllSupportedWhatsAppProviders(),
-        webhookUrl: `${req.protocol}://${req.get('host')}/api/whatsapp/webhook`,
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database is temporarily unavailable. Please retry shortly.',
+        requestId: requestId,
       },
-      meta: { requestId },
     });
+    return;
   }
 });
 
@@ -362,8 +362,15 @@ router.get('/messages', requireAuth, requireTenant(), async (req: Request, res: 
 
     res.json({ success: true, data: result.rows, meta: { totalCount: result.rows.length, requestId } });
   } catch (error: any) {
-    const filtered = IN_MEMORY_MESSAGES.filter(m => m.tenantId === rawTenantId || m.tenantId === tenantId);
-    res.json({ success: true, data: filtered, meta: { totalCount: filtered.length, requestId } });
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database is temporarily unavailable. Please retry shortly.',
+        requestId: requestId,
+      },
+    });
+    return;
   }
 });
 
