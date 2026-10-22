@@ -26,5 +26,29 @@ services:
         sync: false
       - key: FRONTEND_URL
         sync: false
+      - key: APP_PUBLIC_URL
+        sync: false
       - key: PUBLIC_API_BASE_URL
+        sync: false
+      - key: DEFAULT_TIMEZONE
+        sync: false
+      - key: DEFAULT_CURRENCY
+        sync: false
+      - key: DEFAULT_LOCALE
+        sync: false
+      - key: RESEND_API_URL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: PASSWORD_RESET_TOKEN_EXPIRES_MINUTES
+        sync: false
+      - key: OPENAI_API_BASE_URL
+        sync: false
+      - key: GEMINI_API_BASE_URL
+        sync: false
+      - key: WHATSAPP_API_ENDPOINT
+        sync: false
+      - key: GUPSHUP_API_ENDPOINT
         sync: false
