@@ -1,4 +1,5 @@
 import { AiProviderAdapter, GenerateReplyParams, GenerateReplyResult } from './types';
+import { appendProviderPath, resolveHttpsProviderEndpoint } from '../providerEndpoints';
 
 export class GeminiAdapter implements AiProviderAdapter {
   readonly id = 'gemini';
@@ -18,7 +19,9 @@ export class GeminiAdapter implements AiProviderAdapter {
 
     try {
       const targetModel = model || 'gemini-1.5-flash';
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
+      const url = appendProviderPath(resolveHttpsProviderEndpoint('GEMINI_API_BASE_URL', 'generativelanguage.googleapis.com', '/v1beta'), ['models', targetModel]);
+      url.pathname += ':generateContent';
+      url.searchParams.set('key', apiKey);
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -60,7 +63,9 @@ Rules: Provide a helpful, professional reply under ${config.maxOutputChars || 30
     `.trim();
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${config.apiKey}`;
+      const url = appendProviderPath(resolveHttpsProviderEndpoint('GEMINI_API_BASE_URL', 'generativelanguage.googleapis.com', '/v1beta'), ['models', targetModel]);
+      url.pathname += ':generateContent';
+      url.searchParams.set('key', config.apiKey);
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
