@@ -1,16 +1,19 @@
 import React, { useState } from 'react';
 
-export const AuthPage: React.FC = () => {
+interface AuthPageProps { onAuthenticated?: () => void; }
+const API_BASE = ((import.meta as any).env?.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+
+export const AuthPage: React.FC<AuthPageProps> = ({ onAuthenticated }) => {
   const [view, setView] = useState<'login' | 'forgot'>('login');
-  const [email, setEmail] = useState('rohan@bringmybite.in');
-  const [password, setPassword] = useState('Password123!');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [message, setMessage] = useState('');
   const [isError, setIsError] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -18,8 +21,10 @@ export const AuthPage: React.FC = () => {
       const data = await res.json();
       if (data.success && data.data?.token) {
         localStorage.setItem('auth_token', data.data.token);
+        if (data.data.session) localStorage.setItem('auth_session', JSON.stringify(data.data.session));
         setIsError(false);
-        setMessage('✓ Successfully authenticated session for Bring My Bite workspace.');
+        setMessage('✓ Signed in successfully.');
+        onAuthenticated?.();
       } else {
         setIsError(true);
         setMessage(data.error?.message || 'Authentication failed.');
@@ -106,7 +111,7 @@ export const AuthPage: React.FC = () => {
                 <input
                   type="email"
                   required
-                  placeholder="rohan@bringmybite.in"
+                  placeholder="you@company.com"
                   className="form-control"
                   style={{ width: '100%' }}
                 />
