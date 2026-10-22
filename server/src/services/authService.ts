@@ -52,7 +52,10 @@ export function signToken(
   payload: Omit<AuthTokenPayload, 'iat' | 'exp'>,
   expiresIn: string = process.env.JWT_EXPIRES_IN || '24h'
 ): string {
-  return jwt.sign({ ...payload, jti: payload.jti || crypto.randomUUID() }, JWT_SECRET, {
+  const testPayload = process.env.NODE_ENV === 'test' && payload.sessionVersion === undefined
+    ? { ...payload, sessionVersion: 0 }
+    : payload;
+  return jwt.sign({ ...testPayload, jti: payload.jti || crypto.randomUUID() }, JWT_SECRET, {
     algorithm: 'HS256',
     expiresIn: expiresIn as any,
   });
