@@ -39,13 +39,14 @@ const WORKSPACES: Tenant[] = [
 
 const DB_WORKSPACE_SELECT = `
   SELECT t.id::text AS id, t.name, t.slug, t.status, t.timezone, t.currency, t.locale,
-         t.created_at AS "createdAt", t.updated_at AS "updatedAt"
+         t.created_at AS "createdAt", t.updated_at AS "updatedAt", r.name AS role
     FROM tenants t
     JOIN memberships m ON m.tenant_id = t.id
+    JOIN roles r ON r.id = m.role_id
    WHERE m.user_id = $1::uuid AND m.status = 'active' AND t.status = 'active'
 `;
 
-function dbWorkspaceToTenant(row: any): Tenant {
+function dbWorkspaceToTenant(row: any): Tenant & { role?: string } {
   return {
     id: row.id,
     name: row.name,
@@ -56,6 +57,7 @@ function dbWorkspaceToTenant(row: any): Tenant {
     locale: row.locale,
     createdAt: new Date(row.createdAt).toISOString(),
     updatedAt: new Date(row.updatedAt).toISOString(),
+    role: row.role,
   };
 }
 

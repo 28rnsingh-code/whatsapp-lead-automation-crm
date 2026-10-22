@@ -553,7 +553,7 @@ export async function downloadReportsCsvApi(range: string = '30d'): Promise<Blob
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
-      'x-tenant-id': DEFAULT_TENANT_ID,
+      'x-tenant-id': getActiveTenantId(),
     },
   });
 
@@ -617,4 +617,56 @@ export async function rotateWebsiteWebhookApi(): Promise<{
   note: string;
 }> {
   return apiRequest('/integrations/website-webhook/rotate', { method: 'POST', body: JSON.stringify({}) });
+}
+
+export interface WorkspaceListItem {
+  id: string; name: string; slug: string; status: string;
+  timezone: string; currency: string; locale: string; role?: string;
+}
+export async function fetchWorkspacesApi(): Promise<WorkspaceListItem[]> {
+  return apiRequest<WorkspaceListItem[]>('/workspaces', { method: 'GET' });
+}
+export interface TeamMember {
+  membershipId: string; userId: string; name: string; email: string;
+  role: 'Admin' | 'Sales Manager' | 'Sales Executive' | 'Read-only';
+  status: 'active' | 'invited' | 'suspended'; leadsAssigned: number;
+}
+export interface TeamMembersResponse { members: TeamMember[]; demoMode: boolean; }
+export async function fetchTeamMembersApi(): Promise<TeamMembersResponse> {
+  return apiRequest<TeamMembersResponse>('/team/members', { method: 'GET' });
+}
+export async function createTeamInvitationApi(payload: { email: string; displayName?: string; role: TeamMember['role'] }): Promise<{
+  invitationId: string; membershipId: string; email: string; displayName: string; role: string;
+  status: string; inviteUrl: string; expiresAt: string; emailSent: boolean; message: string;
+}> {
+  return apiRequest('/team/invitations', { method: 'POST', body: JSON.stringify(payload) });
+}
+export async function updateTeamMemberApi(membershipId: string, payload: { role?: TeamMember['role']; status?: 'active' | 'suspended' }): Promise<TeamMember> {
+  return apiRequest<TeamMember>('/team/members/' + encodeURIComponent(membershipId), { method: 'PATCH', body: JSON.stringify(payload) });
+}
+export async function acceptTeamInvitationApi(payload: { token: string; password?: string }): Promise<{
+  email: string; workspaceName: string; membershipId: string; passwordAlreadySet: boolean;
+  loginRequired: boolean; message: string;
+}> {
+  return apiRequest('/team/invitations/accept', { method: 'POST', body: JSON.stringify(payload) });
+}
+export interface AuditEventItem {
+  id: string; actor: string; action: string; entityType: string; entityId: string;
+  occurredAt: string; requestId: string; metadata?: Record<string, unknown>;
+}
+export interface AuditEventsResponse {
+  events: AuditEventItem[]; totalCount: number; page: number; pageSize: number; demoMode: boolean;
+}
+export async function fetchAuditEventsApi(page = 1, pageSize = 50): Promise<AuditEventsResponse> {
+  const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  return apiRequest<AuditEventsResponse>('/audit/events?' + query.toString(), { method: 'GET' });
+}
+export async function downloadAuditCsvApi(): Promise<Blob> {
+  const token = await getAuthToken();
+  const response = await fetch(API_BASE + '/audit/export', {
+    method: 'GET',
+    headers: { Authorization: 'Bearer ' + token, 'x-tenant-id': getActiveTenantId() },
+  });
+  if (!response.ok) throw new Error('Audit export failed with HTTP ' + response.status);
+  return response.blob();
 }

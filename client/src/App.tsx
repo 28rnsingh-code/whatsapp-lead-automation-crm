@@ -18,8 +18,10 @@ import { SettingsPage } from './pages/SettingsPage';
 import { AuditPage } from './pages/AuditPage';
 import { AuthPage } from './pages/AuthPage';
 import { OnboardingPage } from './pages/OnboardingPage';
+import { InvitationAcceptancePage } from './pages/InvitationAcceptancePage';
 
 export const App: React.FC = () => {
+  const [inviteToken, setInviteToken] = useState<string>(() => new URLSearchParams(window.location.search).get('invite') || '');
   const [currentPage, setCurrentPage] = useState<NavigationPage>(() =>
     localStorage.getItem('auth_token') && localStorage.getItem('auth_session') ? 'dashboard' : 'auth'
   );
@@ -90,6 +92,16 @@ export const App: React.FC = () => {
         return <DashboardPage onNavigate={setCurrentPage} />;
     }
   };
+
+  if (inviteToken) {
+    return (
+      <InvitationAcceptancePage token={inviteToken} onBackToLogin={() => {
+        window.history.replaceState({}, document.title, window.location.pathname);
+        setInviteToken('');
+        setCurrentPage('auth');
+      }} />
+    );
+  }
 
   return (
     <AppShell
