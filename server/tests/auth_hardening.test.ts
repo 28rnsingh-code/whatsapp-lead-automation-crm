@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/app';
 import { signToken, hashPassword, verifyPassword } from '../src/services/authService';
+import { resolveDatabaseConfig } from '../src/db';
 
 describe('Authentication Hardening, Cryptographic JWTs & Membership Authorization', () => {
   it('hashPassword and verifyPassword should securely hash with salt and verify correctly', async () => {
@@ -110,7 +111,12 @@ describe('Authentication Hardening, Cryptographic JWTs & Membership Authorizatio
       .get('/api/leads')
       .set('Authorization', `Bearer ${riyaToken}`)
       .set('x-tenant-id', 'tenant_bring_my_bite');
-    expect(allowedRes.status).toBe(200);
+    if (resolveDatabaseConfig().isBlocked) {
+      expect(allowedRes.status).toBe(503);
+      expect(allowedRes.body.error.code).toBe('DATABASE_SAFETY_BLOCKED');
+    } else {
+      expect(allowedRes.status).toBe(200);
+    }
 
     // Cross-tenant access where user is not a member
     const forbiddenRes = await request(app)
