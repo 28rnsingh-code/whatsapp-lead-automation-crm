@@ -7,6 +7,10 @@ import { SessionContext, RoleName } from '../types';
 import { pool, withTransaction, resolveDatabaseConfig } from '../db';
 import { isPasswordResetDeliveryConfigured, sendPasswordResetEmail } from '../services/emailService';
 
+export function isValidEmailAddress(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
 const router = Router();
 
 function shouldUseDatabaseAuth(): boolean {
@@ -332,7 +336,7 @@ const passwordResetMessage = 'If the email is linked to an active account, a res
 router.post('/forgot-password', passwordResetRateLimiter, async (req: Request, res: Response): Promise<void> => {
   const requestId = req.requestId || 'req_unknown';
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {
+  if (!isValidEmailAddress(email)) {
     res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Enter a valid email address.', requestId } });
     return;
   }
