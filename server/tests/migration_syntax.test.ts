@@ -84,4 +84,19 @@ describe('Database Migration & Multi-Tenant DDL Verification', () => {
     expect(content).toContain('ENABLE ROW LEVEL SECURITY');
     expect(content).toContain('authenticated');
   });
+
+  it('adds persistent authentication/session tables with least-privilege protection in migration 006', () => {
+    const authMigrationPath = path.join(__dirname, '../src/db/migrations/006_auth_sessions_and_password_resets.sql');
+    expect(fs.existsSync(authMigrationPath)).toBe(true);
+    const content = fs.readFileSync(authMigrationPath, 'utf-8');
+    expect(content).toContain('ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 0');
+    expect(content).toContain('ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ');
+    expect(content).toContain('CREATE TABLE IF NOT EXISTS public.revoked_auth_tokens');
+    expect(content).toContain('CREATE TABLE IF NOT EXISTS public.password_reset_tokens');
+    expect(content).toContain('token_hash CHAR(64) NOT NULL UNIQUE');
+    expect(content).toContain('ENABLE ROW LEVEL SECURITY');
+    expect(content).toContain('REVOKE ALL PRIVILEGES ON TABLE public.password_reset_tokens FROM PUBLIC');
+    expect(content).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|SCHEMA)\b/i);
+  });
+
 });
