@@ -337,9 +337,9 @@ router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
     }
   }
 
+  let processed = 0;
   for (const event of events) {
-    if (dbConfig.isBlocked) {
-      // In-memory deduplication check
+    if (dbConfig.isBlocked && process.env.NODE_ENV === 'test') {
       const duplicate = IN_MEMORY_MESSAGES.find(m => m.providerMessageId === event.providerMessageId);
       if (!duplicate && event.body) {
         IN_MEMORY_MESSAGES.push({
@@ -350,38 +350,50 @@ router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
           direction: 'inbound',
           messageType: event.messageType,
           body: event.body,
-          status: 'read',
+          status: 'received',
+          idempotencyKey: event.providerMessageId,
           providerMessageId: event.providerMessageId,
           aiGenerated: false,
           createdAt: event.timestamp.toISOString(),
         });
+        processed += 1;
       }
       continue;
     }
 
     try {
-      // PostgreSQL idempotent insert with ON CONFLICT DO NOTHING
-      await pool.query(
+      const result = await pool.query(
         `INSERT INTO whatsapp_messages (
-           tenant_id, sender_phone, recipient_phone, direction, message_type, body, status, provider_message_id, created_at
-         ) VALUES ($1, $2, $3, 'inbound', $4, $5, 'read', $6, $7)
+           tenant_id, sender_phone, recipient_phone, direction, message_type, body, status,
+           idempotency_key, provider_message_id, created_at
+         ) VALUES ($1, $2, $3, 'inbound', $4, $5, 'received', $6, $6, $7)
          ON CONFLICT (tenant_id, idempotency_key) DO NOTHING;`,
         [
           tenantId,
           event.senderPhone,
           event.recipientPhone,
           event.messageType,
-          event.body,
+          event.body || '',
           event.providerMessageId,
           event.timestamp,
         ]
-      ).catch(() => {});
+      );
+      processed += result.rowCount || 0;
     } catch {
-      // Ignore webhook processing failures to maintain 200 response
+      // Return a retryable failure; Meta must be allowed to redeliver after storage recovers.
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'WEBHOOK_PERSISTENCE_FAILED',
+          message: 'Webhook event could not be persisted. The provider should retry delivery.',
+          requestId,
+        },
+      });
+      return;
     }
   }
 
-  res.status(200).json({ success: true, processed: events.length });
+  res.status(200).json({ success: true, processed });
 });
 
 // 5. GET /api/whatsapp/messages - Fetch Conversation Messages & Threads
