@@ -138,7 +138,7 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response): Pro
   }
 
   if (shouldUseDatabaseAuth()) {
-    if (!process.env.DATABASE_URL) {
+    if (!resolveDatabaseConfig().connectionString) {
       res.status(503).json({ success: false, error: { code: 'DATABASE_NOT_CONFIGURED', message: 'Authentication storage is not configured.', requestId } });
       return;
     }
