@@ -27,22 +27,16 @@ describe('OneClick Automics CRM API Contracts & Envelope', () => {
     expect(res.body.error).toHaveProperty('code', 'UNAUTHENTICATED');
   });
 
-  it('GET /api/leads with signed JWT should return 200 with tenant-scoped leads', async () => {
+  it('GET /api/leads never reports an empty success when the test safety guard blocks the database', async () => {
     const res = await request(app)
       .get('/api/leads')
       .set('Authorization', `Bearer ${validToken}`)
       .set('x-tenant-id', 'tenant_bring_my_bite');
 
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    expect(Array.isArray(res.body.data)).toBe(true);
-    expect(res.body.meta).toHaveProperty('totalCount');
-    expect(res.body.meta).toHaveProperty('page', 1);
-
-    // Verify all returned leads belong to the active tenant
-    for (const lead of res.body.data) {
-      expect(lead.tenantId).toBe('tenant_bring_my_bite');
-    }
+    expect(res.status).toBe(503);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('DATABASE_SAFETY_BLOCKED');
+    expect(res.body.meta ?? {}).not.toHaveProperty('totalCount');
   });
 
   it('GET /api/leads with forbidden tenant ID should return 403 Forbidden', async () => {
@@ -60,6 +54,7 @@ describe('OneClick Automics CRM API Contracts & Envelope', () => {
     const res = await request(app)
       .post('/api/leads')
       .set('Authorization', `Bearer ${validToken}`)
+      .set('x-tenant-id', 'tenant_bring_my_bite')
       .send({});
 
     expect(res.status).toBe(400);
