@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { requireAuth } from '../middleware/auth';
 import { requireTenant } from '../middleware/tenant';
 import { pool, resolveDatabaseConfig } from '../db';
@@ -28,7 +29,7 @@ function toDbTenantId(id: string): string {
 }
 
 // In-memory store for fallback & test execution
-const IN_MEMORY_SETTINGS: Record<string, any> = {
+const IN_MEMORY_SETTINGS: Record<string, any> = process.env.NODE_ENV === 'test' ? {
   tenant_bring_my_bite: {
     provider: 'cloud_api',
     phoneNumberId: '109823475689123',
@@ -39,9 +40,9 @@ const IN_MEMORY_SETTINGS: Record<string, any> = {
     status: 'connected',
     lastTestedAt: new Date().toISOString(),
   },
-};
+} : {};
 
-const IN_MEMORY_MESSAGES: any[] = [
+const IN_MEMORY_MESSAGES: any[] = process.env.NODE_ENV === 'test' ? [
   {
     id: 'w-msg-1',
     tenantId: 'tenant_bring_my_bite',
@@ -68,7 +69,7 @@ const IN_MEMORY_MESSAGES: any[] = [
     aiGenerated: false,
     createdAt: new Date(Date.now() - 8 * 60 * 1000).toISOString(),
   },
-];
+] : [];
 
 const PREDEFINED_TEMPLATES: WhatsAppTemplate[] = [
   {
@@ -234,40 +235,107 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
   }
 });
 
-// 3. GET /api/whatsapp/webhook - Webhook Verification Challenge (Hub Challenge)
+// 3. GET /api/whatsapp/webhook - Verify Meta's configured challenge token.
 router.get('/webhook', (req: Request, res: Response): void => {
+  const requestId = req.requestId || 'req_unknown';
+  const expectedToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  // Accept verification if challenge provided
-  if (mode === 'subscribe' && token) {
-    res.status(200).send(challenge);
+  if (!expectedToken) {
+    res.status(503).json({ success: false, error: { code: 'WEBHOOK_NOT_CONFIGURED', message: 'WhatsApp webhook verification is not configured.', requestId } });
+    return;
+  }
+  if (mode !== 'subscribe' || typeof token !== 'string' || typeof challenge !== 'string') {
+    res.status(403).json({ success: false, error: { code: 'WEBHOOK_VERIFICATION_FAILED', message: 'WhatsApp webhook verification failed.', requestId } });
+    return;
+  }
+  const provided = Buffer.from(token);
+  const expected = Buffer.from(expectedToken);
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+    res.status(403).json({ success: false, error: { code: 'WEBHOOK_VERIFICATION_FAILED', message: 'WhatsApp webhook verification failed.', requestId } });
+    return;
+  }
+  res.status(200).send(challenge);
+});
+
+// 4. POST /api/whatsapp/webhook - Verify HMAC before processing events.
+router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
+  const requestId = req.requestId || 'req_unknown';
+  const appSecret = process.env.WHATSAPP_APP_SECRET;
+  const providedSignature = req.headers['x-hub-signature-256'];
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+
+  if (!appSecret) {
+    res.status(503).json({ success: false, error: { code: 'WEBHOOK_NOT_CONFIGURED', message: 'WhatsApp webhook signature verification is not configured.', requestId } });
+    return;
+  }
+  if (!rawBody || typeof providedSignature !== 'string' || !/^sha256=[a-f0-9]{64}$/i.test(providedSignature)) {
+    res.status(401).json({ success: false, error: { code: 'INVALID_WEBHOOK_SIGNATURE', message: 'WhatsApp webhook signature is missing or invalid.', requestId } });
+    return;
+  }
+  const expectedSignature = `sha256=${createHmac('sha256', appSecret).update(rawBody).digest('hex')}`;
+  const providedBuffer = Buffer.from(providedSignature);
+  const expectedBuffer = Buffer.from(expectedSignature);
+  if (providedBuffer.length !== expectedBuffer.length || !timingSafeEqual(providedBuffer, expectedBuffer)) {
+    res.status(401).json({ success: false, error: { code: 'INVALID_WEBHOOK_SIGNATURE', message: 'WhatsApp webhook signature verification failed.', requestId } });
     return;
   }
 
-  res.status(200).json({
-    success: true,
-    message: 'WhatsApp Webhook endpoint is active and listening.',
-  });
-});
-
-// 4. POST /api/whatsapp/webhook - Inbound Event Processing & Deduplication
-router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
-  const targetTenantId = (req.headers['x-tenant-id'] as string) || 'tenant_bring_my_bite';
-  const tenantId = toDbTenantId(targetTenantId);
-  const signature = (req.headers['x-hub-signature-256'] as string) || '';
-
   const adapter = getWhatsAppAdapter('cloud_api');
   const events = adapter.parseWebhookEvent(req.body);
-
   if (events.length === 0) {
-    // Ack immediately to WhatsApp provider to prevent webhook retries
     res.status(200).json({ success: true, processed: 0 });
     return;
   }
 
+  const entryItems = Array.isArray(req.body?.entry) ? req.body.entry : [];
+  const phoneNumberIds = new Set<string>();
+  for (const entry of entryItems) {
+    for (const change of Array.isArray(entry?.changes) ? entry.changes : []) {
+      const phoneId = change?.value?.metadata?.phone_number_id;
+      if (typeof phoneId === 'string' && phoneId.trim()) phoneNumberIds.add(phoneId.trim());
+    }
+  }
+  if (phoneNumberIds.size !== 1) {
+    res.status(400).json({ success: false, error: { code: 'WEBHOOK_TENANT_AMBIGUOUS', message: 'Webhook payload must identify exactly one configured WhatsApp phone number.', requestId } });
+    return;
+  }
+  const phoneNumberId = [...phoneNumberIds][0];
   const dbConfig = resolveDatabaseConfig();
+  let targetTenantId: string;
+  let tenantId: string;
+
+  if (dbConfig.isBlocked && process.env.NODE_ENV === 'test') {
+    const testTenantHeader = req.headers['x-tenant-id'];
+    if (typeof testTenantHeader !== 'string' || !testTenantHeader.trim()) {
+      res.status(403).json({ success: false, error: { code: 'WEBHOOK_TENANT_UNRESOLVED', message: 'Test webhook tenant is required.', requestId } });
+      return;
+    }
+    targetTenantId = testTenantHeader.trim();
+    tenantId = toDbTenantId(targetTenantId);
+  } else {
+    try {
+      const configured = await pool.query<{ tenant_id: string }>(
+        `SELECT tenant_id::text AS tenant_id
+           FROM tenant_settings
+          WHERE category = 'whatsapp'
+            AND config_data->>'phoneNumberId' = $1
+          LIMIT 1`,
+        [phoneNumberId]
+      );
+      if (!configured.rows[0]) {
+        res.status(404).json({ success: false, error: { code: 'WHATSAPP_NUMBER_NOT_CONFIGURED', message: 'No workspace is configured for this WhatsApp phone number.', requestId } });
+        return;
+      }
+      tenantId = configured.rows[0].tenant_id;
+      targetTenantId = tenantId;
+    } catch {
+      res.status(503).json({ success: false, error: { code: 'WEBHOOK_DATABASE_UNAVAILABLE', message: 'Webhook storage is temporarily unavailable; retry delivery.', requestId } });
+      return;
+    }
+  }
 
   for (const event of events) {
     if (dbConfig.isBlocked) {
