@@ -26,7 +26,7 @@ interface UserAccount {
 
 type DatabaseAuthRecord = {
   user_id: string; email: string; display_name: string; password_hash: string | null;
-  user_status: string; user_created_at: string | Date; tenant_id: string; tenant_name: string;
+  user_status: string; user_created_at: string | Date; session_version: number; tenant_id: string; tenant_name: string;
   tenant_slug: string; tenant_status: string; timezone: string; currency: string; locale: string;
   tenant_created_at: string | Date; tenant_updated_at: string | Date; role_name: string; permissions: string[];
 };
