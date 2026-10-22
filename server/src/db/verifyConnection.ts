@@ -2,8 +2,8 @@ import { Client } from 'pg';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
+import { resolveDatabaseConfig } from './config';
 
-// Look for .env in root or server directory
 const rootEnvPath = path.resolve(__dirname, '../../../.env');
 const serverEnvPath = path.resolve(__dirname, '../../.env');
 
@@ -14,8 +14,6 @@ if (fs.existsSync(rootEnvPath)) {
 } else {
   dotenv.config();
 }
-
-import { resolveDatabaseConfig } from './config';
 
 export interface VerificationResult {
   hasEnvFile: boolean;
@@ -34,27 +32,24 @@ export async function verifyDatabaseConnection(): Promise<VerificationResult> {
   const hasEnvFile = fs.existsSync(rootEnvPath) || fs.existsSync(serverEnvPath);
   const dbConfig = resolveDatabaseConfig();
 
-  // Test environment safety guard pre-flight
+  // Never try a connection when configuration validation or test-database safety failed.
   if (dbConfig.isBlocked) {
     return {
       hasEnvFile,
       hasDatabaseUrl: Boolean(dbConfig.connectionString),
-      targetDatabase: dbConfig.databaseName,
+      targetDatabase: dbConfig.databaseName || undefined,
       connected: false,
-      error: dbConfig.blockReason,
+      error: dbConfig.blockReason || 'Database connection blocked by safety checks.',
     };
   }
 
-  const databaseUrl = dbConfig.connectionString || process.env.DATABASE_URL;
-
-  if (!databaseUrl || databaseUrl.includes('postgres_password')) {
+  const databaseUrl = dbConfig.connectionString;
+  if (!databaseUrl) {
     return {
       hasEnvFile,
-      hasDatabaseUrl: Boolean(databaseUrl),
+      hasDatabaseUrl: false,
       connected: false,
-      error: !databaseUrl 
-        ? 'DATABASE_URL is not set in environment or .env file.' 
-        : 'DATABASE_URL contains placeholder credentials ("postgres_password").',
+      error: 'DATABASE_URL is not set. Configure it in the runtime environment.',
     };
   }
 
@@ -66,17 +61,25 @@ export async function verifyDatabaseConnection(): Promise<VerificationResult> {
       hasEnvFile,
       hasDatabaseUrl: true,
       connected: false,
-      error: 'DATABASE_URL is not a valid PostgreSQL connection string URL.',
+      error: 'DATABASE_URL is not a valid URL.',
     };
   }
 
-  const targetDatabase = parsed.pathname.replace(/^\//, '');
-  const targetHost = parsed.hostname;
-  const targetPort = parseInt(parsed.port || '5432', 10);
-  const targetUser = parsed.username;
+  if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
+    return {
+      hasEnvFile,
+      hasDatabaseUrl: true,
+      connected: false,
+      error: 'DATABASE_URL must use the postgres:// or postgresql:// protocol.',
+    };
+  }
 
-  // Safety check: Never run against default 'postgres' database or empty database name
-  if (!targetDatabase || targetDatabase === 'postgres') {
+  const targetDatabase = decodeURIComponent(parsed.pathname.replace(/^\//, '').split('?')[0]);
+  const targetHost = parsed.hostname;
+  const targetPort = Number(parsed.port || 5432);
+  const targetUser = decodeURIComponent(parsed.username);
+
+  if (!targetDatabase || targetDatabase.toLowerCase() === 'postgres') {
     return {
       hasEnvFile,
       hasDatabaseUrl: true,
@@ -85,21 +88,42 @@ export async function verifyDatabaseConnection(): Promise<VerificationResult> {
       targetPort,
       targetUser,
       connected: false,
-      error: `Safety guard: target database is '${targetDatabase}'. Migrations must only run against a dedicated database such as 'oneclick_crm'.`,
+      error: `Safety guard: target database is '${targetDatabase || '(empty)'}'. Configure the intended application database, not the default 'postgres' database.`,
     };
   }
 
   const client = new Client({
     connectionString: databaseUrl,
-    connectionTimeoutMillis: 3500,
+    connectionTimeoutMillis: 5000,
+    application_name: 'whatsapp-lead-automation-crm-db-verifier',
   });
 
+  let connected = false;
   try {
     await client.connect();
-    const res = await client.query('SELECT current_database(), current_user, version()');
-    await client.end();
+    connected = true;
+    const res = await client.query(
+      'SELECT current_database() AS current_database, current_user AS current_user, version() AS version',
+    );
+    const row = res.rows[0] as {
+      current_database: string;
+      current_user: string;
+      version: string;
+    } | undefined;
 
-    const row = res.rows[0];
+    if (!row || row.current_database !== targetDatabase) {
+      return {
+        hasEnvFile,
+        hasDatabaseUrl: true,
+        targetDatabase,
+        targetHost,
+        targetPort,
+        targetUser,
+        connected: false,
+        error: 'Safety guard: PostgreSQL connected to a database different from the configured DATABASE_URL target.',
+      };
+    }
+
     return {
       hasEnvFile,
       hasDatabaseUrl: true,
@@ -110,8 +134,8 @@ export async function verifyDatabaseConnection(): Promise<VerificationResult> {
       connected: true,
       dbVersion: row.version.split(' on ')[0],
     };
-  } catch (err: any) {
-    try { await client.end(); } catch {}
+  } catch (err: unknown) {
+    const error = err instanceof Error ? err : new Error(String(err));
     return {
       hasEnvFile,
       hasDatabaseUrl: true,
@@ -120,15 +144,28 @@ export async function verifyDatabaseConnection(): Promise<VerificationResult> {
       targetPort,
       targetUser,
       connected: false,
-      error: err.message,
-      errorCode: err.code,
+      error: error.message,
+      errorCode: 'code' in error && typeof error.code === 'string' ? error.code : undefined,
     };
+  } finally {
+    if (connected) {
+      try {
+        await client.end();
+      } catch {
+        // Preserve the original verification result if closing the client also fails.
+      }
+    }
   }
 }
 
 if (require.main === module) {
-  verifyDatabaseConnection().then((res) => {
-    console.log(JSON.stringify(res, null, 2));
-    process.exit(res.connected ? 0 : 1);
-  });
+  verifyDatabaseConnection()
+    .then((result) => {
+      console.log(JSON.stringify(result, null, 2));
+      process.exit(result.connected ? 0 : 1);
+    })
+    .catch((error: unknown) => {
+      console.error('[DB Verify] Unexpected failure:', error);
+      process.exit(1);
+    });
 }
