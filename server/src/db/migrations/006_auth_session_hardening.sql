@@ -1,7 +1,8 @@
 -- Security remediation 006: reset-token lifecycle and persisted session revocation.
 -- Store only hashes for one-time reset secrets; plaintext tokens are never persisted.
 ALTER TABLE users
-  ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
+  ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
