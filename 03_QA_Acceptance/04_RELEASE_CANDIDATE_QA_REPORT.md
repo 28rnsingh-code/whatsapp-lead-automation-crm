@@ -1,68 +1,96 @@
 # Release Candidate QA Report — OneClick Automics CRM
 
-**Assessment date:** 22 October 2026  
+**Assessment date:** 23 October 2026  
 **Candidate branch:** `qa/remediation-2026-10-22`  
-**Candidate commit:** `1df43c12ad8676512aed45a3dcf63fb8af525ce3`  
-**Automated CI evidence:** [GitHub Actions run 59](https://github.com/rnsingh28rs-arch/oneclick-autonix-crm/actions/runs/39829975989)  
-**Decision:** **Automated checks green; external/live acceptance remains pending. Do not represent this as production sign-off yet.**
+**Candidate commit assessed:** `261338615dd9dce3f914659a797aae9aca5c7c04`  
+**Automated CI evidence:** [GitHub Actions run 39836565736](https://github.com/rnsingh28rs-arch/oneclick-autonix-crm/actions/runs/39836565736)  
+**Decision:** **CI PASS; production release remains NO-GO until environment, provider and client acceptance gates pass.**
 
-## 1. Evidence-backed status
+## 1. Latest verified automated evidence
 
-The GitHub Actions run above completed successfully for commit `1df43c12ad8676512aed45a3dcf63fb8af525ce3`. It reports **11 test files passed and 92 tests passed**. The workflow reports success for:
-- Dependency installation using the lockfile.
-- Server and client build.
-- Repository code-quality checks.
-- Automated server test suite.
+GitHub Actions run 39836565736 completed successfully on commit `261338615dd9dce3f914659a797aae9aca5c7c04`.
 
-The repository test suite includes API contracts, authentication hardening, core CRM workflows, database/migration safeguards, import/export, reporting/billing, tenant isolation, AI auto-reply, and WhatsApp integration/webhook behavior. **Important limitation:** CI did not run against a dedicated PostgreSQL test database. `leads_persistence.test.ts` executed its safety-guard test (1 test) because test database access is blocked; therefore, the 92 passing tests do **not** establish real PostgreSQL write/read persistence. Run the persistence suite against a dedicated isolated `TEST_DATABASE_URL` before sign-off. The CI result also does not prove a real provider account or deployed production environment is configured.
+- Dependency installation from the lockfile: PASS.
+- Server and client build: PASS.
+- Source quality checks: PASS.
+- Migrations against an isolated temporary PostgreSQL 16 database: PASS.
+- Synthetic test fixtures seeded into that isolated database: PASS.
+- Automated tests: **11 test files passed; 100 tests passed**.
+- Test database persistence and tenant-isolation suite executed against the isolated PostgreSQL service.
 
-## 2. Release gates still requiring environment access
+This is meaningful code-level evidence, but it is not proof of a deployed production environment or live external provider accounts.
 
-These checks must be run against the intended staging/production candidate and their evidence attached before final acceptance:
+## 2. Remediation included in this candidate
 
-| Gate | Required evidence | Pass condition |
+- Database-backed authentication now uses the resolved database configuration so the dedicated `TEST_DATABASE_URL` works without requiring an unrelated `DATABASE_URL` variable.
+- Isolated PostgreSQL test fixtures now exercise a user with membership in two workspaces and a separate user who lacks membership in the requested workspace.
+- Billing tests now assert the intended fail-closed behavior: paid-plan changes return `BILLING_PROVIDER_NOT_CONFIGURED` until a real payment provider is configured. A mock must not activate a paid plan in a live workspace.
+- WhatsApp integration tests now use the configured test phone-number ID and a persisted consented lead.
+- Twilio is no longer advertised as a supported provider until a real Twilio adapter exists. Unknown/unsupported providers no longer silently fall back to a mock adapter.
+- Mock WhatsApp delivery and synthetic provider-token success paths are restricted to test/development behavior and are not intended to simulate real production delivery.
+
+## 3. Deployment architecture and access status
+
+The repository deployment guide specifies the following architecture:
+
+- **Frontend:** Vercel static Vite site.
+- **API:** Render web service from `render.yaml`.
+- **Database:** a separate Supabase PostgreSQL project dedicated to this CRM.
+- **Domain registrar:** the browser context available during planning showed a BigRock account with `qualitypaan.com`. No DNS record or subdomain change has been made or verified.
+
+Current account discovery did not find a Vercel project matching “oneclick” in either checked connected Vercel account. The checked Supabase organization currently shows Bring My Bite projects only; **do not reuse a Bring My Bite database for client CRM data**. A dedicated client-owned Supabase project and Render API service still need to be provisioned and configured.
+
+The proposed preview hostname can be `crm.qualitypaan.com` if the project owner confirms that this domain is intended for this CRM. It is not live yet. DNS must only be changed after the frontend deployment target exists and the registrar write workflow is available.
+
+## 4. Outstanding release gates
+
+| Gate | Current status | Required evidence |
 |---|---|---|
-| Frontend deployment | Exact deployed frontend URL and build/deployment status | Correct candidate loads; no runtime console errors |
-| API deployment | Exact API URL and health response | Health endpoint responds successfully over HTTPS |
-| Database | Migration and seed logs from the dedicated CRM database | Migrations complete; seed is idempotent; no writes to another project/database |
-| Authentication | Screenshots/test record for valid and invalid login, session expiry, logout | Correct outcomes; no tenant or role bypass |
-| Lead lifecycle | Create, read, update, search/filter, stage transition, reload | Data persists and remains tenant-scoped |
-| Import/export | Representative CSV, malformed row, authorized export, unauthorized export | Validation is clear; scope and permissions enforced; spreadsheet formula payloads are safe |
-| Team/permissions | Admin and restricted-role test accounts | API enforces the same restrictions as the UI |
-| Audit | Corresponding event records for critical mutations | Actor, tenant, action, and timestamp are recorded without secrets |
-| WhatsApp | Provider configuration, webhook verification, inbound/outbound test IDs | Signature/token checks pass; delivery status is real; opt-out blocks prohibited outbound messaging |
-| Email/reset | Configured mail provider and test mailbox | Actual delivery, expiry, single-use behavior, and neutral account-enumeration response verified |
-| Responsive/accessibility | Evidence at 1440×900, 1024×768, and 390×844; keyboard pass | No critical overflow; focus/labels/errors work; critical journeys remain usable |
+| Vercel frontend | Not deployed/verified | Preview URL, correct build, browser console and critical route smoke tests |
+| Render API | Not deployed/verified | HTTPS URL, health endpoint, runtime logs, CORS and environment verification |
+| Dedicated Supabase database | Not provisioned/verified | Client-owned project, migration logs, seed verification, backup/recovery plan |
+| Production login | Not issued | Named admin account, secure password rotation and login/session/logout tests |
+| Password recovery email | **Not implemented per deployment guide** | Implement the delivery flow, configure a real sender and test expiry/single-use behavior before claiming it works |
+| Team invitations | Email delivery not configured | Verify invitation creation/expiry and securely share links until delivery is implemented |
+| WhatsApp | Not live-verified | Choose provider, connect authorized business account/number, verify webhook, consent/opt-out, template/window and real delivery status |
+| AI provider | Not live-verified | Choose provider, configure secret, test response/error handling and limits |
+| Billing | Paid plan change intentionally disabled without provider | Keep disabled unless a real provider is selected, implemented and tested |
+| Domain / HTTPS | Not configured | Authorized subdomain, correct DNS records, certificate and HTTPS smoke test |
+| Security and roles | Automated tests pass; live acceptance pending | Admin/executive negative tests, two-workspace isolation, revocation and audit evidence |
+| Responsive/browser QA | Not verified against deployment | Desktop, tablet and mobile acceptance; keyboard/focus/error states |
+| Client sign-off | Pending | Written acceptance against the approved scope and recorded exceptions |
 
-## 3. Explicit integration constraints
+## 5. WhatsApp onboarding requirement
 
-The repository's deployment guide states that the following are not proven by CI and require real configuration and provider-side testing:
-- Frontend and API deployments, their exact public URLs, and database migration/seed execution.
-- Live Meta WhatsApp or Gupshup credentials, permissions, approved templates, webhook registration, and consent prerequisites.
-- AI provider credentials and live response behavior.
-- Email delivery configuration for password recovery; team invitations may require privately sharing the generated invitation link if outbound email is not configured.
-- Any payment/billing provider flow; mock adapters must not be treated as a live payment integration.
+The product goal is a low-friction setup where the business user enters a number and is guided through connection. The implementation must not imply that a number alone authorizes messaging. The selected provider may require account linking, number verification, business permissions, approved templates or other provider-side steps.
 
-Do not paste production secrets into this report, screenshots, issue comments, or client-visible evidence.
+The CRM should show a setup checklist and only enable outbound messaging after live configuration and validation. Messages must be blocked when consent cannot be verified, the recipient opted out, the 24-hour service window has expired without an approved template, or provider status is not connected.
 
-## 4. QA execution protocol
+## 6. Credentials and secrets
 
-1. Test only against a dedicated staging tenant/database or an explicitly approved production test workspace.
-2. Record the candidate commit SHA, environment URL, browser/device, role, test ID, expected result, actual result, and evidence link for every test.
-3. Run positive, negative, permission-denied, empty-state, slow-network, and retry cases for each critical journey.
-4. Verify tenant isolation with two separate test tenants and attempts to read or mutate the other tenant's record IDs.
-5. Do not use real customer data or send unsolicited WhatsApp messages. Use opted-in test recipients and approved templates.
-6. Classify failures using the repository severity policy: P0 data/security/core lifecycle blocker; P1 critical workflow or permission/reporting failure; P2 moderate usability issue; P3 cosmetic.
-7. Any P0/P1 failure blocks acceptance. Fix it, rerun the affected test and full CI, and attach fresh evidence.
-8. Obtain written client QA acceptance only after all applicable gates pass or the client explicitly signs off a documented exception.
+- No production login ID/password has been issued or verified.
+- CI bootstrap credentials are synthetic test-only values and must never be reused in production.
+- Never put database URLs, passwords, JWT/session secrets, encryption keys, email keys, WhatsApp tokens or webhook secrets in this report, source control, screenshots or chat.
+- Use the client's approved secret manager/deployment environment settings and issue individual accounts.
 
-## 5. Release disposition
+## 7. Release disposition
 
-- **Automated CI:** PASS — 11 test files / 92 tests on commit `1df43c12ad8676512aed45a3dcf63fb8af525ce3`.
-- **Dedicated PostgreSQL integration/persistence test:** NOT RUN; test suite intentionally blocked database access in CI. This is a release gate, not a pass.
-- **Live deployment and environment smoke test:** NOT VERIFIED in this report.
-- **Live provider integrations:** NOT VERIFIED in this report.
-- **Manual cross-browser/responsive/accessibility acceptance:** NOT VERIFIED in this report.
-- **Final production acceptance:** PENDING evidence for the environment-dependent gates above.
+- **Automated CI on candidate commit 261338615dd9dce3f914659a797aae9aca5c7c04:** PASS — 11 files / 100 tests.
+- **Production environment and public URLs:** NOT VERIFIED.
+- **Dedicated client-owned Supabase project:** NOT VERIFIED.
+- **Live WhatsApp/email/AI/payment integrations:** NOT VERIFIED; paid billing remains intentionally disabled.
+- **Domain/DNS/HTTPS:** NOT CONFIGURED.
+- **Manual browser and client acceptance:** PENDING.
+- **Production decision:** **NO-GO until all applicable P0/P1 gates pass and the client accepts the deployed candidate.**
 
-This report intentionally distinguishes automated code checks from real-world release readiness; a green build alone is not a production certification.
+## 8. Required release sequence
+
+1. Keep all work on the QA branch until the candidate is approved.
+2. Provision a dedicated client-owned Supabase project; verify the target before running migrations and seed.
+3. Deploy the API on the documented Render architecture and frontend on Vercel using private environment settings.
+4. Verify authentication, workspace membership, lead CRUD/persistence, imports/exports, permissions, audit events and error behavior.
+5. Implement and test password recovery email delivery; configure invitation delivery or document a secure temporary procedure.
+6. Connect the chosen WhatsApp provider and test only with opted-in recipients and approved templates.
+7. Add the authorized subdomain after the deployment target is known; verify DNS and HTTPS.
+8. Run full CI on the exact release candidate, capture desktop/mobile evidence, and obtain written client acceptance.
+9. Promote to production only after approval. No merge to `main` or production deployment is authorized by this report alone.
