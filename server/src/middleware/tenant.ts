@@ -72,7 +72,7 @@ const VERIFIED_MEMBERSHIPS: MembershipRecord[] = [
  * 3. Cross-tenant or unauthorized requests are strictly rejected with 403.
  */
 function requiredPermissionForRequest(req: Request): string | null {
-  const path = req.originalUrl.split('?')[0].replace(/\\/+$/, '') || '/';
+  const path = req.originalUrl.split('?')[0].replace(/\/+$/, '') || '/';
   const method = req.method.toUpperCase();
   if (path.startsWith('/api/leads')) {
     if (method === 'GET') return 'leads:read';
