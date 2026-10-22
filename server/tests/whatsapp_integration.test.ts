@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import { createHmac } from 'crypto';
 import request from 'supertest';
 import { createApp } from '../src/app';
 import { signToken } from '../src/services/authService';
+
+const TEST_WHATSAPP_APP_SECRET = 'unit-test-whatsapp-app-secret';
+process.env.WHATSAPP_APP_SECRET = TEST_WHATSAPP_APP_SECRET;
+process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN = 'oneclick_verify';
 import {
   getWhatsAppAdapter,
   maskSecret,
@@ -134,7 +139,7 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
   });
 
   describe('4. Webhook Hub Verification & Ingestion', () => {
-    it('GET /api/whatsapp/webhook handles Meta Hub challenge challenge verification', async () => {
+    it('GET /api/whatsapp/webhook validates Meta Hub challenge token', async () => {
       const challengeToken = 'hub_challenge_random_123456';
       const res = await request(app)
         .get(`/api/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=oneclick_verify&hub.challenge=${challengeToken}`);
@@ -143,36 +148,62 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
       expect(res.text).toBe(challengeToken);
     });
 
-    it('POST /api/whatsapp/webhook receives and acknowledges inbound messages', async () => {
+    it('GET /api/whatsapp/webhook rejects an incorrect verify token', async () => {
+      const res = await request(app)
+        .get('/api/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=not-authorized');
+
+      expect(res.status).toBe(403);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('WEBHOOK_VERIFICATION_FAILED');
+    });
+
+    it('POST /api/whatsapp/webhook rejects an invalid signature before event processing', async () => {
+      const res = await request(app)
+        .post('/api/whatsapp/webhook')
+        .set('x-hub-signature-256', `sha256=${'0'.repeat(64)}`)
+        .send({ object: 'whatsapp_business_account', entry: [] });
+
+      expect(res.status).toBe(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('INVALID_WEBHOOK_SIGNATURE');
+    });
+
+    it('POST /api/whatsapp/webhook processes only a validly signed inbound event', async () => {
+      const payload = {
+        object: 'whatsapp_business_account',
+        entry: [
+          {
+            id: '209384756192834',
+            changes: [
+              {
+                value: {
+                  messaging_product: 'whatsapp',
+                  metadata: { display_phone_number: '919999988888', phone_number_id: '109823475689123' },
+                  messages: [
+                    {
+                      from: '919876543210',
+                      id: `wamid.test_${Date.now()}`,
+                      timestamp: `${Math.floor(Date.now() / 1000)}`,
+                      text: { body: 'Pricing inquiry from WhatsApp' },
+                      type: 'text',
+                    },
+                  ],
+                },
+                field: 'messages',
+              },
+            ],
+          },
+        ],
+      };
+      const rawPayload = JSON.stringify(payload);
+      const signature = `sha256=${createHmac('sha256', TEST_WHATSAPP_APP_SECRET).update(rawPayload).digest('hex')}`;
+
       const res = await request(app)
         .post('/api/whatsapp/webhook')
         .set('x-tenant-id', 'tenant_bring_my_bite')
-        .send({
-          object: 'whatsapp_business_account',
-          entry: [
-            {
-              id: '209384756192834',
-              changes: [
-                {
-                  value: {
-                    messaging_product: 'whatsapp',
-                    metadata: { display_phone_number: '919999988888', phone_number_id: '109823475689123' },
-                    messages: [
-                      {
-                        from: '919876543210',
-                        id: `wamid.test_${Date.now()}`,
-                        timestamp: `${Math.floor(Date.now() / 1000)}`,
-                        text: { body: 'Pricing inquiry from WhatsApp' },
-                        type: 'text',
-                      },
-                    ],
-                  },
-                  field: 'messages',
-                },
-              ],
-            },
-          ],
-        });
+        .set('x-hub-signature-256', signature)
+        .set('Content-Type', 'application/json')
+        .send(rawPayload);
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
