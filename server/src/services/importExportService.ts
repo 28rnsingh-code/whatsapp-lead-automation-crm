@@ -379,7 +379,7 @@ export async function executeImportBatch(
                 tenant_id, name, phone_raw, phone_normalized, email, company_name,
                 source, stage_id, deal_value_minor_units, currency, next_action,
                 consent_status, notes, created_by
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'Call', 'Consented', $11, $12);`,
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'Call', 'Unknown', $11, $12);`,
               [
                 tenantId,
                 row.name,
@@ -514,7 +514,8 @@ export function generateLeadsCsv(leads: any[]): string {
     'Company',
     'Source',
     'Stage',
-    'Deal Value (INR)',
+    'Deal Value',
+    'Currency',
     'Next Action',
     'Consent Status',
     'Created At',
@@ -539,6 +540,7 @@ export function generateLeadsCsv(leads: any[]): string {
     escapeCsv(l.source),
     escapeCsv(l.stageName || l.stage_id),
     escapeCsv(((Number(l.dealValueMinorUnits || l.deal_value_minor_units || 0)) / 100).toFixed(2)),
+    escapeCsv(l.currency),
     escapeCsv(l.nextAction || l.next_action),
     escapeCsv(l.consentStatus || l.consent_status),
     escapeCsv(l.createdAt || l.created_at),
