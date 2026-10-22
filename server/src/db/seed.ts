@@ -23,6 +23,9 @@ export async function seedDefaults(): Promise<SeedResult> {
   const adminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
   const adminPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD;
   const adminName = process.env.BOOTSTRAP_ADMIN_NAME?.trim() || adminEmail?.split('@')[0] || '';
+  const defaultTimezone = process.env.DEFAULT_TIMEZONE?.trim();
+  const defaultCurrency = process.env.DEFAULT_CURRENCY?.trim().toUpperCase();
+  const defaultLocale = process.env.DEFAULT_LOCALE?.trim();
 
   if (!workspaceName || workspaceName.length > 255) {
     throw new Error('Set WORKSPACE_NAME to the intended CRM workspace name before seeding.');
@@ -35,6 +38,25 @@ export async function seedDefaults(): Promise<SeedResult> {
   }
   if (!adminPassword || adminPassword.length < 12) {
     throw new Error('Set BOOTSTRAP_ADMIN_PASSWORD to a unique password of at least 12 characters before seeding.');
+  }
+  if (!defaultTimezone) {
+    throw new Error('Set DEFAULT_TIMEZONE to the intended IANA timezone before seeding.');
+  }
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: defaultTimezone });
+  } catch {
+    throw new Error('DEFAULT_TIMEZONE must be a valid IANA timezone.');
+  }
+  if (!defaultCurrency || !/^[A-Z]{3}$/.test(defaultCurrency)) {
+    throw new Error('Set DEFAULT_CURRENCY to a valid three-letter ISO currency code before seeding.');
+  }
+  if (!defaultLocale) {
+    throw new Error('Set DEFAULT_LOCALE to the intended application locale before seeding.');
+  }
+  try {
+    Intl.getCanonicalLocales(defaultLocale);
+  } catch {
+    throw new Error('DEFAULT_LOCALE must be a valid BCP 47 locale.');
   }
 
   console.log('[Seed] Creating or verifying the CRM workspace and first admin...');
@@ -49,9 +71,9 @@ export async function seedDefaults(): Promise<SeedResult> {
       isolatedTestDatabase ? DEFAULT_TENANT_ID : null,
       workspaceName,
       workspaceSlug,
-      process.env.DEFAULT_TIMEZONE || 'Asia/Kolkata',
-      process.env.DEFAULT_CURRENCY || 'INR',
-      process.env.DEFAULT_LOCALE || 'en-IN',
+      defaultTimezone,
+      defaultCurrency,
+      defaultLocale,
     ]
   );
   const tenantId = tenantRes.rows[0].id;
