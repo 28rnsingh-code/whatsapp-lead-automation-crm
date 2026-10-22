@@ -69,6 +69,7 @@ router.get('/analytics', requireAuth, requireTenant(), async (req: Request, res:
     // Funnel counts from PostgreSQL
     const funnelQuery = await pool.query(
       `SELECT 
+         (SELECT currency FROM tenants WHERE id = $1::uuid) AS currency,
          COUNT(*) as total_leads,
          COUNT(CASE WHEN ps.sort_order >= 2 THEN 1 END) as contacted_leads,
          COUNT(CASE WHEN ps.sort_order >= 3 THEN 1 END) as qualified_leads,
@@ -99,7 +100,7 @@ router.get('/analytics', requireAuth, requireTenant(), async (req: Request, res:
     // Team Leaderboard
     const leaderboardQuery = await pool.query(
       `SELECT 
-         COALESCE(u.display_name, 'Rohan Singh') as owner,
+         COALESCE(u.display_name, 'Unassigned') as owner,
          COUNT(l.id) as "leadsOwned",
          COUNT(CASE WHEN ps.is_won = true THEN 1 END) as "dealsClosed",
          COALESCE(SUM(CASE WHEN ps.is_won = true THEN l.deal_value_minor_units ELSE 0 END), 0) as "revenueMinor"
@@ -140,7 +141,7 @@ router.get('/analytics', requireAuth, requireTenant(), async (req: Request, res:
       data: {
         winRate,
         avgDealSize,
-        currency: 'INR',
+        currency: f.currency,
         funnel,
         leaderboard,
         sources,
