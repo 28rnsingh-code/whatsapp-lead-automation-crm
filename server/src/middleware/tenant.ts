@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { RoleName } from '../types';
-import { pool } from '../db';
+import { pool, resolveDatabaseConfig } from '../db';
 
 export interface TenantContext {
   tenantId: string;
@@ -88,16 +88,31 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       return;
     }
 
-    // 2. Identify the target tenant requested
-    const targetTenantId = (req.headers['x-tenant-id'] as string) || 'tenant_bring_my_bite';
+    // Workspace selection must be explicit. Never silently default an identity to a tenant.
+    const rawTenantHeader = req.headers['x-tenant-id'];
+    if (typeof rawTenantHeader !== 'string' || !rawTenantHeader.trim()) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'WORKSPACE_REQUIRED',
+          message: 'Select a workspace before accessing workspace resources.',
+          requestId,
+        },
+      });
+      return;
+    }
+    const targetTenantId = rawTenantHeader.trim();
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const testFixtureMode = process.env.NODE_ENV === 'test' && resolveDatabaseConfig().isBlocked;
 
-    // Reject reserved or known forbidden tenant identifiers immediately
-    if (!targetTenantId || targetTenantId === 'forbidden_tenant') {
+    // Friendly/demo tenant slugs are accepted only by isolated, database-blocked tests.
+    // Normal development and production require the real persistent tenant UUID.
+    if (!testFixtureMode && !uuidPattern.test(targetTenantId)) {
       res.status(403).json({
         success: false,
         error: {
           code: 'TENANT_ACCESS_DENIED',
-          message: 'Access to the specified workspace is forbidden.',
+          message: 'The requested workspace identifier is invalid.',
           requestId,
         },
       });
@@ -106,35 +121,10 @@ export function requireTenant(allowedRoles?: RoleName[]) {
 
     let membership: { role: RoleName; status: string; permissions: string[] } | null = null;
 
-    // 3. Attempt DB-backed membership lookup if live database connection is active
-    try {
-      if (process.env.DATABASE_URL && process.env.DATABASE_URL !== 'postgresql://postgres:postgres_password@localhost:5432/oneclick_crm') {
-        const result = await pool.query<{ role_name: string; status: string }>(
-          `SELECT r.name as role_name, m.status 
-           FROM memberships m
-           JOIN roles r ON r.id = m.role_id
-           WHERE m.tenant_id = $1 AND m.user_id = $2
-           LIMIT 1`,
-          [targetTenantId, req.userId]
-        );
-        if (result.rows.length > 0) {
-          const row = result.rows[0];
-          membership = {
-            role: row.role_name as RoleName,
-            status: row.status,
-            permissions: ['leads:read', 'leads:write'],
-          };
-        }
-      }
-    } catch {
-      // If DB is offline, fall back to verified membership directory
-    }
-
-    // In production, never authorize a request from static/demo membership fixtures.
-    // The persistent memberships table is the sole authority in production.
-    if (!membership && process.env.NODE_ENV !== 'production') {
+    if (testFixtureMode) {
+      // Fixtures are deliberately limited to the blocked-database test path.
       const match = VERIFIED_MEMBERSHIPS.find(
-        (m) => m.tenantId === targetTenantId && m.userId === req.userId
+        (candidate) => candidate.tenantId === targetTenantId && candidate.userId === req.userId
       );
       if (match) {
         membership = {
@@ -143,15 +133,53 @@ export function requireTenant(allowedRoles?: RoleName[]) {
           permissions: match.permissions,
         };
       }
+    } else {
+      // Persistent membership lookup is mandatory for every non-fixture runtime.
+      // Database failures deny access with 503; they never trigger an in-memory fallback.
+      try {
+        const result = await pool.query<{ role_name: string; status: string; permissions: string[] }>(
+          `SELECT r.name AS role_name,
+                  m.status,
+                  COALESCE(array_agg(DISTINCT rp.permission_key)
+                    FILTER (WHERE rp.permission_key IS NOT NULL), ARRAY[]::text[]) AS permissions
+             FROM memberships m
+             JOIN roles r ON r.id = m.role_id
+             JOIN tenants t ON t.id = m.tenant_id AND t.status = 'active'
+             JOIN users u ON u.id = m.user_id AND u.status = 'active'
+        LEFT JOIN role_permissions rp ON rp.role_id = r.id
+            WHERE m.tenant_id = $1::uuid AND m.user_id = $2::uuid
+            GROUP BY r.name, m.status
+            LIMIT 1`,
+          [targetTenantId, req.userId]
+        );
+        const row = result.rows[0];
+        if (row) {
+          membership = {
+            role: row.role_name as RoleName,
+            status: row.status,
+            permissions: row.permissions || [],
+          };
+        }
+      } catch {
+        res.status(503).json({
+          success: false,
+          error: {
+            code: 'TENANT_AUTHORIZATION_UNAVAILABLE',
+            message: 'Workspace authorization could not be verified. Please retry shortly.',
+            requestId,
+          },
+        });
+        return;
+      }
     }
 
-    // 4. If no valid membership exists, reject with 403 Forbidden
+    // No membership or a suspended membership is never permissively authorized.
     if (!membership) {
       res.status(403).json({
         success: false,
         error: {
           code: 'TENANT_ACCESS_DENIED',
-          message: 'You are not a member of this workspace.',
+          message: 'You are not an active member of this workspace.',
           requestId,
         },
       });
