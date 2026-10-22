@@ -23,8 +23,8 @@ describe('Authentication Hardening, Cryptographic JWTs & Membership Authorizatio
     const res = await request(app)
       .post('/api/auth/login')
       .send({
-        email: 'rohan@bringmybite.in',
-        password: 'Password123!',
+        email: process.env.BOOTSTRAP_ADMIN_EMAIL || 'rohan@bringmybite.in',
+        password: process.env.BOOTSTRAP_ADMIN_PASSWORD || 'Password123!',
       });
 
     expect(res.status).toBe(200);
