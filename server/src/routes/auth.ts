@@ -7,6 +7,11 @@ import { pool } from '../db';
 
 const router = Router();
 
+function shouldUseDatabaseAuth(): boolean {
+  return process.env.NODE_ENV === 'production'
+    || (Boolean(process.env.DATABASE_URL) && process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true');
+}
+
 // Internal user record with bcrypt password hash
 interface UserAccount {
   id: string;
@@ -131,7 +136,7 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response): Pro
     return;
   }
 
-  if (process.env.NODE_ENV === 'production') {
+  if (shouldUseDatabaseAuth()) {
     if (!process.env.DATABASE_URL) {
       res.status(503).json({ success: false, error: { code: 'DATABASE_NOT_CONFIGURED', message: 'Authentication storage is not configured.', requestId } });
       return;
@@ -227,7 +232,7 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response): Pro
 
 // 2. Verified Session Retrieval (Protected)
 router.get('/session', requireAuth, async (req: Request, res: Response): Promise<void> => {
-  if (process.env.NODE_ENV === 'production') {
+  if (shouldUseDatabaseAuth()) {
     try {
       const record = await findDatabaseAuthRecord({ userId: req.userId });
       if (!record) {
@@ -303,7 +308,7 @@ router.post('/logout', requireAuth, (req: Request, res: Response) => {
 // 4. Forgot Password (Safe Enumeration-Free Response)
 router.post('/forgot-password', (req: Request, res: Response): void => {
   const { email } = req.body;
-  if (process.env.NODE_ENV === 'production') {
+  if (shouldUseDatabaseAuth()) {
     res.status(501).json({ success: false, error: { code: 'PASSWORD_RECOVERY_NOT_CONFIGURED', message: 'Password recovery is not configured. Contact your workspace administrator.', requestId: req.requestId || 'req_unknown' } });
     return;
   }

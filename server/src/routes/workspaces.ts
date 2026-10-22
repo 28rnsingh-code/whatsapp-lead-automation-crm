@@ -6,6 +6,11 @@ import { pool } from '../db';
 
 const router = Router();
 
+function shouldUseDatabaseMemberships(): boolean {
+  return process.env.NODE_ENV === 'production'
+    || (Boolean(process.env.DATABASE_URL) && process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true');
+}
+
 // Development-only workspace fixtures. Production always reads memberships from PostgreSQL.
 const WORKSPACES: Tenant[] = [
   {
@@ -56,7 +61,7 @@ function dbWorkspaceToTenant(row: any): Tenant {
 
 // List only the authenticated user's workspaces.
 router.get('/', requireAuth, async (req: Request, res: Response): Promise<void> => {
-  if (process.env.NODE_ENV === 'production') {
+  if (shouldUseDatabaseMemberships()) {
     try {
       const result = await pool.query(
         `${DB_WORKSPACE_SELECT} ORDER BY t.created_at ASC;`,
@@ -89,7 +94,7 @@ router.get('/', requireAuth, async (req: Request, res: Response): Promise<void> 
 
 // Get the active workspace after requireTenant has checked membership.
 router.get('/current', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
-  if (process.env.NODE_ENV === 'production') {
+  if (shouldUseDatabaseMemberships()) {
     try {
       const result = await pool.query(
         `${DB_WORKSPACE_SELECT}
