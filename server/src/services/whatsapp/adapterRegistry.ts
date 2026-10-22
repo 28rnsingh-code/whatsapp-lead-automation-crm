@@ -66,7 +66,7 @@ if (process.env.NODE_ENV === 'production' && (!ENCRYPTION_SECRET || ENCRYPTION_S
 }
 const ENCRYPTION_KEY = crypto
   .createHash('sha256')
-  .update(ENCRYPTION_SECRET || 'oneclick_crm_secret_key_32bytes!')
+  .update(ENCRYPTION_SECRET || crypto.randomBytes(32).toString('hex'))
   .digest();
 
 export function encryptSecret(plainText: string): string {
