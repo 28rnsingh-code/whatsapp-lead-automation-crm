@@ -21,7 +21,7 @@ import { OnboardingPage } from './pages/OnboardingPage';
 
 export const App: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<NavigationPage>(() =>
-    localStorage.getItem('auth_token') ? 'dashboard' : 'auth'
+    localStorage.getItem('auth_token') && localStorage.getItem('auth_session') ? 'dashboard' : 'auth'
   );
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('theme') === 'dark';
@@ -54,7 +54,7 @@ export const App: React.FC = () => {
 
   const renderCurrentPage = () => {
     // The CRM pages require a real signed-in user and a persisted workspace session.
-    if (!localStorage.getItem('auth_token') && currentPage !== 'auth') {
+    if ((!localStorage.getItem('auth_token') || !localStorage.getItem('auth_session')) && currentPage !== 'auth') {
       return <AuthPage onAuthenticated={() => setCurrentPage('dashboard')} />;
     }
     switch (currentPage) {
