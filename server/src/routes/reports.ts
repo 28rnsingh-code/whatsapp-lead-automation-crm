@@ -234,26 +234,15 @@ router.get('/usage', requireAuth, requireTenant(), async (req: Request, res: Res
       meta: { requestId },
     });
   } catch (error: any) {
-    res.json({
-      success: true,
-      data: {
-        periodKey,
-        plan: defaultPlan,
-        usage: {
-          leadsCount: 0,
-          maxLeads: defaultPlan.limits.maxLeads,
-          leadsPct: 0,
-          messagesCount: 0,
-          maxMessages: defaultPlan.limits.maxMessagesPerMonth,
-          messagesPct: 0,
-          importRowsCount: 0,
-          maxImports: defaultPlan.limits.maxImportsPerMonth,
-          aiTokensCount: 0,
-          maxAiTokens: defaultPlan.limits.maxAiTokens,
-        },
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database is temporarily unavailable. Please retry shortly.',
+        requestId: requestId,
       },
-      meta: { requestId },
     });
+    return;
   }
 });
 

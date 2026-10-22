@@ -265,11 +265,15 @@ router.get('/history', requireAuth, requireTenant(), async (req: Request, res: R
       },
     });
   } catch (error: any) {
-    res.json({
-      success: true,
-      data: [],
-      meta: { totalCount: 0, requestId: req.requestId },
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database is temporarily unavailable. Please retry shortly.',
+        requestId: req.requestId || 'req_unknown',
+      },
     });
+    return;
   }
 });
 

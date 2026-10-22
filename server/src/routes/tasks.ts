@@ -135,12 +135,15 @@ router.get('/', requireAuth, requireTenant(), async (req: Request, res: Response
       },
     });
   } catch (error: any) {
-    const filtered = IN_MEMORY_TASKS.filter(t => t.tenantId === rawTenantId || t.tenantId === tenantId);
-    res.json({
-      success: true,
-      data: filtered,
-      meta: { totalCount: filtered.length, requestId: req.requestId },
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database is temporarily unavailable. Please retry shortly.',
+        requestId: req.requestId || 'req_unknown',
+      },
     });
+    return;
   }
 });
 
