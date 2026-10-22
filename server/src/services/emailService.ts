@@ -1,10 +1,36 @@
-const RESEND_API_URL = 'https://api.resend.com/emails';
+const RESEND_API_HOST = 'api.resend.com';
+const RESEND_API_PATH = '/emails';
+
+function getValidatedResendApiUrl(): string | null {
+  const configuredUrl = process.env.RESEND_API_URL?.trim();
+  if (!configuredUrl) return null;
+
+  try {
+    const url = new URL(configuredUrl);
+    if (
+      url.protocol !== 'https:'
+      || url.hostname.toLowerCase() !== RESEND_API_HOST
+      || url.pathname !== RESEND_API_PATH
+      || url.username
+      || url.password
+      || url.port
+      || url.search
+      || url.hash
+    ) {
+      return null;
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
 
 export function isPasswordResetDeliveryConfigured(): boolean {
   return Boolean(
     process.env.RESEND_API_KEY?.trim()
     && process.env.EMAIL_FROM?.trim()
     && process.env.APP_PUBLIC_URL?.trim()
+    && getValidatedResendApiUrl()
   );
 }
 
@@ -20,8 +46,9 @@ export async function sendPasswordResetEmail(
 ): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY?.trim();
   const from = process.env.EMAIL_FROM?.trim();
-  if (!apiKey || !from) {
-    throw new Error('Password reset email delivery is not configured.');
+  const apiUrl = getValidatedResendApiUrl();
+  if (!apiKey || !from || !apiUrl) {
+    throw new Error('Password reset email delivery is not configured with a valid Resend endpoint.');
   }
 
   const publicOrigin = process.env.APP_PUBLIC_URL?.trim();
@@ -39,7 +66,7 @@ export async function sendPasswordResetEmail(
 
   const safeName = displayName.replace(/[<>"'&]/g, '').slice(0, 120) || 'there';
   const timeoutSignal = signal ? undefined : AbortSignal.timeout(10000);
-  const response = await fetch(RESEND_API_URL, {
+  const response = await fetch(apiUrl, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
