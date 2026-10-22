@@ -4,14 +4,14 @@ import { requireAuth } from '../middleware/auth';
 import { loginRateLimiter, passwordResetRateLimiter } from '../middleware/rateLimiter';
 import { hashPassword, verifyPassword, signToken } from '../services/authService';
 import { SessionContext, RoleName } from '../types';
-import { pool, withTransaction } from '../db';
+import { pool, withTransaction, resolveDatabaseConfig } from '../db';
 import { isPasswordResetDeliveryConfigured, sendPasswordResetEmail } from '../services/emailService';
 
 const router = Router();
 
 function shouldUseDatabaseAuth(): boolean {
-  // Static users below are test-only fixtures. Every normal runtime must use persisted accounts.
-  return process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true';
+  // Only test runs with the database safety guard blocking all I/O may use isolated fixtures.
+  return !(process.env.NODE_ENV === 'test' && resolveDatabaseConfig().isBlocked);
 }
 
 // Internal user record with bcrypt password hash
@@ -369,7 +369,7 @@ router.post('/forgot-password', passwordResetRateLimiter, async (req: Request, r
       });
 
       try {
-        const resetUrl = new URL('/reset-password', process.env.APP_PUBLIC_URL);
+        const resetUrl = new URL('/reset-password', process.env.APP_PUBLIC_URL!);
         resetUrl.searchParams.set('token', rawToken);
         await sendPasswordResetEmail(email, user.display_name, resetUrl.toString());
       } catch (error) {
