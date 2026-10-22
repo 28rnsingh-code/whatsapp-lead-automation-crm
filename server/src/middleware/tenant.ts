@@ -130,8 +130,9 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       // If DB is offline, fall back to verified membership directory
     }
 
-    // Fallback to verified membership directory
-    if (!membership) {
+    // In production, never authorize a request from static/demo membership fixtures.
+    // The persistent memberships table is the sole authority in production.
+    if (!membership && process.env.NODE_ENV !== 'production') {
       const match = VERIFIED_MEMBERSHIPS.find(
         (m) => m.tenantId === targetTenantId && m.userId === req.userId
       );
