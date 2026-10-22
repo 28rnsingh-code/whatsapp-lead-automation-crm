@@ -101,4 +101,16 @@ describe('Database Migration & Multi-Tenant DDL Verification', () => {
     expect(content).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|SCHEMA)\b/i);
   });
 
+
+  it('removes implicit tenant timezone, currency, and locale defaults in migration 007', () => {
+    const tenantConfigMigration = path.join(__dirname, '../src/db/migrations/007_require_explicit_tenant_preferences.sql');
+    expect(fs.existsSync(tenantConfigMigration)).toBe(true);
+    const content = fs.readFileSync(tenantConfigMigration, 'utf-8');
+    expect(content).toContain('ALTER COLUMN timezone DROP DEFAULT');
+    expect(content).toContain('ALTER COLUMN currency DROP DEFAULT');
+    expect(content).toContain('ALTER COLUMN locale DROP DEFAULT');
+    expect(content).not.toMatch(/\\bDROP\\s+(?:TABLE|COLUMN|SCHEMA)\\b/i);
+    expect(content).not.toMatch(/UPDATE\\s+public\\.tenants/i);
+  });
+
 });
