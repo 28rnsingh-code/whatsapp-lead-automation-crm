@@ -1,4 +1,4 @@
-import express, { Express } from 'express';
+import express, { Express, Request } from 'express';
 import cors from 'cors';
 import { requestIdMiddleware, errorHandler } from './middleware/errorHandler';
 import healthRoutes from './routes/health';
@@ -39,7 +39,13 @@ export function createApp(): Express {
       callback(null, allowedOrigins.includes(origin));
     },
   }));
-  app.use(express.json({ limit: '15mb' }));
+  app.use(express.json({
+    limit: '15mb',
+    verify: (req, _res, buffer) => {
+      // Meta webhook signatures are calculated over the exact bytes sent by Meta.
+      (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+    },
+  }));
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
   app.use(requestIdMiddleware);
   app.use(auditMutationMiddleware);
