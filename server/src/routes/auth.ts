@@ -44,7 +44,6 @@ async function findDatabaseAuthRecord(selector: { email?: string; userId?: strin
  LEFT JOIN role_permissions rp ON rp.role_id = r.id
      WHERE ${criterion} AND u.status = 'active'
      GROUP BY u.id, t.id, r.id
-     ORDER BY t.created_at ASC
      LIMIT 1
   `, [value]);
   return result.rows[0] || null;
