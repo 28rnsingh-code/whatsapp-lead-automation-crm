@@ -68,8 +68,8 @@ export class CloudApiWhatsAppAdapter implements WhatsAppProviderAdapter {
       };
     }
 
-    // When running with mock/test tokens, simulate successful dispatch
-    if (credentials.accessToken.includes('mock') || credentials.accessToken.startsWith('test_')) {
+    // Synthetic tokens may simulate delivery only in automated tests, never in a deployed runtime.
+    if (process.env.NODE_ENV === 'test' && (credentials.accessToken.includes('mock') || credentials.accessToken.startsWith('test_'))) {
       return {
         success: true,
         providerMessageId: `wamid.HBgL${Date.now()}${Math.random().toString(36).substring(2, 6)}`,

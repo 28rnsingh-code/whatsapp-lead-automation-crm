@@ -173,6 +173,19 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
     sourceNumber,
   };
 
+  const supportedProvider = getAllSupportedWhatsAppProviders().some((item) => item.id === provider);
+  if (!supportedProvider) {
+    res.status(400).json({
+      success: false,
+      error: {
+        code: 'WHATSAPP_PROVIDER_UNSUPPORTED',
+        message: 'This WhatsApp provider is not implemented or is disabled in this environment.',
+        requestId,
+      },
+    });
+    return;
+  }
+
   const adapter = getWhatsAppAdapter(provider);
   const validation = await adapter.validateCredentials(credentials);
 
@@ -585,7 +598,20 @@ router.post('/messages', requireAuth, requireTenant(), async (req: Request, res:
   const effectiveConfig = testRuntime
     ? { provider: 'mock', phoneNumberId: rawConfig.phoneNumberId || 'test-phone-number' }
     : rawConfig;
-  const adapter = getWhatsAppAdapter(effectiveConfig.provider);
+  let adapter;
+  try {
+    adapter = getWhatsAppAdapter(effectiveConfig.provider);
+  } catch {
+    res.status(409).json({
+      success: false,
+      error: {
+        code: 'WHATSAPP_PROVIDER_UNSUPPORTED',
+        message: 'The configured WhatsApp provider is not supported. No message was sent.',
+        requestId,
+      },
+    });
+    return;
+  }
   const sendResult = await adapter.sendMessage({
     tenantId,
     recipientPhone: recipientPhone.trim(),

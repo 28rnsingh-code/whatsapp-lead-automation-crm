@@ -12,6 +12,9 @@ export class MockWhatsAppAdapter implements WhatsAppProviderAdapter {
   readonly name = 'Local Mock Provider (Simulated)';
 
   async validateCredentials(credentials: WhatsAppCredentials): Promise<{ valid: boolean; error?: string }> {
+    if (process.env.NODE_ENV === 'production') {
+      return { valid: false, error: 'The mock WhatsApp provider is disabled in production.' };
+    }
     if (credentials.apiKey && credentials.apiKey.startsWith('invalid')) {
       return { valid: false, error: 'Invalid API Key provided for mock provider.' };
     }
@@ -19,6 +22,9 @@ export class MockWhatsAppAdapter implements WhatsAppProviderAdapter {
   }
 
   async sendMessage(params: OutboundMessageParams): Promise<OutboundMessageResult> {
+    if (process.env.NODE_ENV === 'production') {
+      return { success: false, status: 'failed', error: 'The mock WhatsApp provider is disabled in production.' };
+    }
     if (params.recipientPhone.includes('0000000000')) {
       return {
         success: false,

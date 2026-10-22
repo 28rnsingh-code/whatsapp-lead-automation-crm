@@ -30,7 +30,8 @@ export class GupshupWhatsAppAdapter implements WhatsAppProviderAdapter {
       return { success: false, status: 'failed', error: 'Missing Gupshup credentials.' };
     }
 
-    if (credentials.apiKey.includes('mock') || credentials.apiKey.startsWith('test_')) {
+    // Synthetic keys may simulate delivery only in automated tests, never in a deployed runtime.
+    if (process.env.NODE_ENV === 'test' && (credentials.apiKey.includes('mock') || credentials.apiKey.startsWith('test_'))) {
       return {
         success: true,
         providerMessageId: `gupshup-msg-${Date.now()}`,

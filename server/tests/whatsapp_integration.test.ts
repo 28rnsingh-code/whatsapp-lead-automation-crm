@@ -9,6 +9,7 @@ process.env.WHATSAPP_APP_SECRET = TEST_WHATSAPP_APP_SECRET;
 process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN = 'oneclick_verify';
 import {
   getWhatsAppAdapter,
+  getAllSupportedWhatsAppProviders,
   maskSecret,
   encryptSecret,
   decryptSecret,
@@ -80,7 +81,12 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
       expect(valid.valid).toBe(true);
     });
 
-    it('dispatches mock outbound message with provider ID', async () => {
+    it('does not advertise or silently mock an unimplemented Twilio provider', () => {
+      expect(getAllSupportedWhatsAppProviders().map((provider) => provider.id)).not.toContain('twilio');
+      expect(() => getWhatsAppAdapter('twilio')).toThrow(/not implemented and is disabled/i);
+    });
+
+    it('dispatches mock outbound message with provider ID in test mode', async () => {
       const adapter = getWhatsAppAdapter('mock');
       const res = await adapter.sendMessage({
         tenantId: 'tenant_bring_my_bite',
