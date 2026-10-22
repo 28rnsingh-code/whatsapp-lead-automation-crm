@@ -18,8 +18,22 @@ import billingRoutes from './routes/billing';
 export function createApp(): Express {
   const app = express();
 
-  // Standard Middlewares
-  app.use(cors());
+  // In production, browsers may call the API only from explicitly configured frontend origins.
+  // Local development keeps the Vite proxy convenient; non-browser clients need no Origin header.
+  const allowedOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  app.use(cors({
+    origin(origin, callback) {
+      if (!origin || process.env.NODE_ENV !== 'production') {
+        callback(null, true);
+        return;
+      }
+      callback(null, allowedOrigins.includes(origin));
+    },
+  }));
   app.use(express.json({ limit: '15mb' }));
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
   app.use(requestIdMiddleware);
