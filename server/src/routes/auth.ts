@@ -8,8 +8,8 @@ import { pool } from '../db';
 const router = Router();
 
 function shouldUseDatabaseAuth(): boolean {
-  return process.env.NODE_ENV === 'production'
-    || (Boolean(process.env.DATABASE_URL) && process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true');
+  // Static users below are test-only fixtures. Every normal runtime must use persisted accounts.
+  return process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true';
 }
 
 // Internal user record with bcrypt password hash
@@ -76,9 +76,7 @@ function sessionFromDatabase(row: DatabaseAuthRecord): SessionContext {
 }
 
 
-// In-memory user store with real bcrypt password hashes
-// Default credentials for dev/test:
-// Email: rohan@bringmybite.in | Password: Password123!
+// Explicit test-only identity fixtures. They are unreachable outside NODE_ENV=test.
 let INITIALIZED_USERS: UserAccount[] = [];
 
 async function getInitializedUsers(): Promise<UserAccount[]> {
