@@ -7,6 +7,19 @@ import { DEFAULT_TENANT_ID, DEFAULT_USER_ID } from '../db/seed';
 
 const router = Router();
 
+async function resolveOwnerName(userId?: string | null): Promise<string | undefined> {
+  if (!userId) return undefined;
+  try {
+    const result = await pool.query<{ display_name: string }>(
+      'SELECT display_name FROM users WHERE id = $1::uuid LIMIT 1;',
+      [userId],
+    );
+    return result.rows[0]?.display_name;
+  } catch {
+    return undefined;
+  }
+}
+
 const TENANT_UUID_MAP: Record<string, string> = {
   tenant_bring_my_bite: DEFAULT_TENANT_ID,
   tenant_automics_labs: 'a0000000-0000-0000-0000-000000000002',
@@ -187,12 +200,16 @@ router.get('/', requireAuth, requireTenant(), async (req: Request, res: Response
 router.post('/', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const { name, phoneRaw, email, companyName, source, stageId, dealValue, notes, nextAction } = req.body;
+  const consentStatus = typeof req.body?.consentStatus === 'string' ? req.body.consentStatus : 'Unknown';
   const requestId = req.requestId || 'req_unknown';
 
   // Validation
   const errors: Record<string, string[]> = {};
   if (!name || !name.trim()) errors.name = ['Name is required.'];
   if (!phoneRaw || !phoneRaw.trim()) errors.phoneRaw = ['Phone number is required.'];
+  if (!['Unknown', 'Consented', 'Opted Out'].includes(consentStatus)) {
+    errors.consentStatus = ['Consent status must be Unknown, Consented, or Opted Out.'];
+  }
 
   if (Object.keys(errors).length > 0) {
     res.status(400).json({
@@ -274,7 +291,7 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7, $8, 'In Review', $9, $10,
          (SELECT currency FROM tenants WHERE id = $1::uuid),
-         $11, 'Consented', $12, $13
+         $11, $12, $13, $14
        )
        RETURNING *;`,
       [
@@ -289,12 +306,14 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
         ownerUserId,
         dealValueMinorUnits,
         nextAction || 'Call',
+        consentStatus,
         notes?.trim() || '',
         ownerUserId,
       ]
     );
 
     const created = insertResult.rows[0];
+    const ownerName = await resolveOwnerName(created.owner_user_id);
 
     // Record initial lead creation activity
     await pool.query(
@@ -328,7 +347,7 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
       stageColor: targetStageColor,
       qualificationStatus: created.qualification_status,
       ownerUserId: created.owner_user_id || undefined,
-      ownerName: req.userEmail || 'Unassigned',
+      ownerName: ownerName || 'Unassigned',
       dealValueMinorUnits: Number(created.deal_value_minor_units),
       currency: created.currency,
       nextAction: created.next_action,
@@ -342,7 +361,7 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
           activityType: 'lead_created',
           summary: `Lead created via ${created.source} with initial stage "${targetStageName}".`,
           occurredAt: created.created_at,
-          actorName: req.userEmail || 'System',
+          actorName: ownerName || 'System',
         },
       ],
     };
@@ -618,6 +637,7 @@ router.patch('/:id', requireAuth, requireTenant(), async (req: Request, res: Res
 
     const updateResult = await pool.query(updateQuery, values);
     const updated = updateResult.rows[0];
+    const updatedOwnerName = await resolveOwnerName(updated?.owner_user_id);
 
     // Log activity if stage changed
     if (targetStageName && targetStageName !== current.stage_name) {
@@ -643,7 +663,7 @@ router.patch('/:id', requireAuth, requireTenant(), async (req: Request, res: Res
       stageColor: targetStageColor || '#155eef',
       qualificationStatus: updated.qualification_status,
       ownerUserId: updated.owner_user_id || undefined,
-      ownerName: created.owner_user_id ? undefined : 'Unassigned',
+      ownerName: updatedOwnerName || 'Unassigned',
       dealValueMinorUnits: Number(updated.deal_value_minor_units),
       currency: updated.currency,
       nextAction: updated.next_action,
@@ -757,7 +777,7 @@ router.post('/:id/activities', requireAuth, requireTenant(), async (req: Request
       success: true,
       data: {
         ...insertResult.rows[0],
-        actorName: ownerUserId ? (req.userEmail || 'Workspace member') : 'System',
+        actorName: userId ? (req.userEmail || 'Workspace member') : 'System',
       },
       meta: { requestId },
     });
