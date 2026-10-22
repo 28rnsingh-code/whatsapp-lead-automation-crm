@@ -141,7 +141,7 @@ export function resolveDatabaseConfig(): DatabaseConfig {
     throw new Error('CRITICAL CONFIGURATION ERROR: Set DATABASE_URL to a newly provisioned, isolated CRM database before starting the server.');
   }
   const parsed = new URL(configuredUrl);
-  if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !parsed.hostname || !parsed.pathname.replace(/^\\//, '')) {
+  if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !parsed.hostname || !parsed.pathname.replace(/^\//, '')) {
     throw new Error('CRITICAL CONFIGURATION ERROR: DATABASE_URL is not a valid PostgreSQL connection URL.');
   }
 
