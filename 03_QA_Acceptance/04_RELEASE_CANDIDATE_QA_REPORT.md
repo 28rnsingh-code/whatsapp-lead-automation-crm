@@ -8,13 +8,13 @@
 
 ## 1. Evidence-backed status
 
-The GitHub Actions run above completed successfully for the candidate commit. The workflow reports success for:
+The GitHub Actions run above completed successfully for commit `1df43c12ad8676512aed45a3dcf63fb8af525ce3`. It reports **11 test files passed and 92 tests passed**. The workflow reports success for:
 - Dependency installation using the lockfile.
 - Server and client build.
 - Repository code-quality checks.
 - Automated server test suite.
 
-The repository test suite includes tests covering API contracts, authentication hardening, core CRM workflows, database/migration safeguards, import/export, lead persistence, reporting/billing, tenant isolation, AI auto-reply, and WhatsApp integration/webhook behavior. The CI result proves these automated checks passed in the CI environment; it does not prove a real provider account or deployed production environment is configured.
+The repository test suite includes API contracts, authentication hardening, core CRM workflows, database/migration safeguards, import/export, reporting/billing, tenant isolation, AI auto-reply, and WhatsApp integration/webhook behavior. **Important limitation:** CI did not run against a dedicated PostgreSQL test database. `leads_persistence.test.ts` executed its safety-guard test (1 test) because test database access is blocked; therefore, the 92 passing tests do **not** establish real PostgreSQL write/read persistence. Run the persistence suite against a dedicated isolated `TEST_DATABASE_URL` before sign-off. The CI result also does not prove a real provider account or deployed production environment is configured.
 
 ## 2. Release gates still requiring environment access
 
@@ -58,7 +58,8 @@ Do not paste production secrets into this report, screenshots, issue comments, o
 
 ## 5. Release disposition
 
-- **Automated CI:** PASS for the linked candidate run.
+- **Automated CI:** PASS — 11 test files / 92 tests on commit `1df43c12ad8676512aed45a3dcf63fb8af525ce3`.
+- **Dedicated PostgreSQL integration/persistence test:** NOT RUN; test suite intentionally blocked database access in CI. This is a release gate, not a pass.
 - **Live deployment and environment smoke test:** NOT VERIFIED in this report.
 - **Live provider integrations:** NOT VERIFIED in this report.
 - **Manual cross-browser/responsive/accessibility acceptance:** NOT VERIFIED in this report.
