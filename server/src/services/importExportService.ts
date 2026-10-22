@@ -326,16 +326,24 @@ export async function executeImportBatch(
   let skippedCount = 0;
   const failedCount = errors.length;
 
-  // Resolve default stage for tenant if live DB is active
+  // Resolve the tenant-owned currency and default stage from PostgreSQL.
   let defaultStageId: string | null = null;
+  let tenantCurrency: string | null = null;
   if (!dbConfig.isBlocked) {
-    try {
-      const stageRes = await pool.query<{ id: string }>(
-        `SELECT id FROM pipeline_stages WHERE tenant_id = $1 ORDER BY sort_order ASC LIMIT 1;`,
-        [tenantId]
-      );
-      if (stageRes.rows.length > 0) defaultStageId = stageRes.rows[0].id;
-    } catch {}
+    const tenantResult = await pool.query<{ currency: string }>(
+      'SELECT currency FROM tenants WHERE id = $1::uuid LIMIT 1;',
+      [tenantId]
+    );
+    tenantCurrency = tenantResult.rows[0]?.currency || null;
+    if (!tenantCurrency) {
+      throw new Error('The selected CRM workspace has no configured currency.');
+    }
+
+    const stageRes = await pool.query<{ id: string }>(
+      'SELECT id FROM pipeline_stages WHERE tenant_id = $1::uuid ORDER BY sort_order ASC LIMIT 1;',
+      [tenantId]
+    );
+    if (stageRes.rows.length > 0) defaultStageId = stageRes.rows[0].id;
   }
 
   // Filter and process rows according to duplicate strategy
@@ -371,7 +379,7 @@ export async function executeImportBatch(
                 tenant_id, name, phone_raw, phone_normalized, email, company_name,
                 source, stage_id, deal_value_minor_units, currency, next_action,
                 consent_status, notes, created_by
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'INR', 'Call', 'Consented', $10, $11);`,
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'Call', 'Consented', $11, $12);`,
               [
                 tenantId,
                 row.name,
@@ -382,6 +390,7 @@ export async function executeImportBatch(
                 row.source,
                 defaultStageId,
                 row.dealValueMinorUnits || 0,
+                tenantCurrency,
                 row.notes || '',
                 userId || DEFAULT_USER_ID,
               ]
