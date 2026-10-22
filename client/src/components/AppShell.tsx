@@ -96,7 +96,7 @@ export const AppShell: React.FC<AppShellProps> = ({
                 setCurrentWorkspace(ws.name);
                 setWorkspaceModalOpen(false);
                 window.location.reload();
-              }
+              }}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -111,7 +111,7 @@ export const AppShell: React.FC<AppShellProps> = ({
             >
               <div>
                 <strong style={{ display: 'block', fontSize: '14px' }}>{ws.name}</strong>
-                <small style={{ color: 'var(--text-muted)' }}>{ws.plan} • Role: {ws.role}</small>
+                <small style={{ color: 'var(--text-muted)' }}>{ws.currency || 'INR'} • Role: {ws.role || 'Workspace member'}</small>
               </div>
               {currentWorkspace === ws.name && (
                 <span style={{ color: 'var(--blue)', fontWeight: 700 }}>✓ Active</span>
