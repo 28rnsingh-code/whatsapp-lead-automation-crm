@@ -51,6 +51,7 @@ async function apiRequest<T>(
 
   if (response.status === 401 && !isRetry) {
     localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_session');
     return apiRequest<T>(endpoint, options, true);
   }
 
