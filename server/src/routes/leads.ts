@@ -14,8 +14,8 @@ const TENANT_UUID_MAP: Record<string, string> = {
 
 // Helper to normalize tenant ID to database UUID
 function toDbTenantId(id: string): string {
-  if (!id) return DEFAULT_TENANT_ID;
-  if (TENANT_UUID_MAP[id]) return TENANT_UUID_MAP[id];
+  // Friendly tenant aliases exist only for legacy isolated test fixtures.
+  if (process.env.NODE_ENV === 'test' && TENANT_UUID_MAP[id]) return TENANT_UUID_MAP[id];
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (uuidRegex.test(id)) return id;
   return '00000000-0000-0000-0000-000000000000';
@@ -34,10 +34,10 @@ function fromDbTenantId(id: string): string {
 function toDbUserId(id?: string): string | null {
   if (!id) return null;
   // Legacy identity is used only by isolated development/test fixtures.
-  if (id === 'user_rohan_singh') return process.env.NODE_ENV === 'production' ? null : DEFAULT_USER_ID;
+  if (id === 'user_rohan_singh' && process.env.NODE_ENV === 'test') return DEFAULT_USER_ID;
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (uuidRegex.test(id)) return id;
-  return process.env.NODE_ENV === 'production' ? null : DEFAULT_USER_ID;
+  return null;
 }
 
 // 1. List Leads (Strictly Tenant-Isolated from PostgreSQL)
@@ -110,7 +110,7 @@ router.get('/', requireAuth, requireTenant(), async (req: Request, res: Response
          COALESCE(ps.color_token, '#155eef') as "stageColor",
          l.qualification_status as "qualificationStatus",
          l.owner_user_id as "ownerUserId",
-         COALESCE(u.display_name, 'Rohan Singh') as "ownerName",
+         COALESCE(u.display_name, 'Unassigned') as "ownerName",
          l.deal_value_minor_units as "dealValueMinorUnits",
          l.currency,
          l.next_action as "nextAction",
@@ -146,27 +146,38 @@ router.get('/', requireAuth, requireTenant(), async (req: Request, res: Response
       },
     });
   } catch (error: any) {
-    if (error.name === 'DatabaseSafetyError') {
-      res.json({
-        success: true,
-        data: [],
-        meta: {
-          page: 1,
-          pageSize: 10,
-          totalCount: 0,
-          totalPages: 0,
-          requestId: req.requestId,
+    const requestId = req.requestId || 'req_unknown';
+    if (error?.name === 'DatabaseSafetyError') {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'DATABASE_SAFETY_BLOCKED',
+          message: 'Database access is blocked by the active safety policy.',
+          requestId,
         },
       });
       return;
     }
-    console.error('[Leads API] Error fetching leads from PostgreSQL:', error.message);
+    const unavailable = typeof error?.code === 'string'
+      && (/^08/.test(error.code) || ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', '57P01', '57P02', '57P03', '53300'].includes(error.code));
+    if (unavailable) {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'DATABASE_UNAVAILABLE',
+          message: 'The database is temporarily unavailable. Please retry shortly.',
+          requestId,
+        },
+      });
+      return;
+    }
+    console.error('[Leads API] Error fetching leads from PostgreSQL:', error?.message || 'Unknown error');
     res.status(500).json({
       success: false,
       error: {
         code: 'DATABASE_ERROR',
         message: 'Failed to retrieve leads from database.',
-        requestId: req.requestId || 'req_unknown',
+        requestId,
       },
     });
   }
@@ -315,7 +326,7 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
       stageColor: targetStageColor,
       qualificationStatus: created.qualification_status,
       ownerUserId: created.owner_user_id || undefined,
-      ownerName: 'Rohan Singh',
+      ownerName: req.userEmail || 'Unassigned',
       dealValueMinorUnits: Number(created.deal_value_minor_units),
       currency: created.currency,
       nextAction: created.next_action,
@@ -329,7 +340,7 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
           activityType: 'lead_created',
           summary: `Lead created via ${created.source} with initial stage "${targetStageName}".`,
           occurredAt: created.created_at,
-          actorName: 'Rohan Singh',
+          actorName: req.userEmail || 'System',
         },
       ],
     };
@@ -448,18 +459,31 @@ router.get('/:id', requireAuth, requireTenant(), async (req: Request, res: Respo
       },
     });
   } catch (error: any) {
-    if (error.name === 'DatabaseSafetyError') {
-      res.status(404).json({
+    if (error?.name === 'DatabaseSafetyError') {
+      res.status(503).json({
         success: false,
         error: {
-          code: 'NOT_FOUND',
-          message: 'Lead not found in this workspace.',
+          code: 'DATABASE_SAFETY_BLOCKED',
+          message: 'Database access is blocked by the active safety policy.',
           requestId: req.requestId || 'req_unknown',
         },
       });
       return;
     }
-    console.error('[Leads API] Error fetching lead by id from PostgreSQL:', error.message);
+    const unavailable = typeof error?.code === 'string'
+      && (/^08/.test(error.code) || ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', '57P01', '57P02', '57P03', '53300'].includes(error.code));
+    if (unavailable) {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'DATABASE_UNAVAILABLE',
+          message: 'The database is temporarily unavailable. Please retry shortly.',
+          requestId: req.requestId || 'req_unknown',
+        },
+      });
+      return;
+    }
+    console.error('[Leads API] Error fetching lead by id from PostgreSQL:', error?.message || 'Unknown error');
     res.status(500).json({
       success: false,
       error: {
