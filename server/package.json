@@ -10,7 +10,8 @@
     "dev": "ts-node src/index.ts",
     "migrate": "ts-node src/db/migrate.ts",
     "db:check": "ts-node src/db/verifyConnection.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "seed": "ts-node src/db/seed.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
