@@ -3,8 +3,21 @@ import request from 'supertest';
 import { app } from '../src/app';
 import { signToken, hashPassword, verifyPassword } from '../src/services/authService';
 import { resolveDatabaseConfig } from '../src/db';
+import { isValidEmailAddress } from '../src/routes/auth';
 
 describe('Authentication Hardening, Cryptographic JWTs & Membership Authorization', () => {
+
+  it('accepts normal work email addresses and rejects malformed recovery addresses', () => {
+    expect(isValidEmailAddress('sales@example.com')).toBe(true);
+    expect(isValidEmailAddress('first.last+crm@example.co.in')).toBe(true);
+    expect(isValidEmailAddress('support@subdomain.example.com')).toBe(true);
+    expect(isValidEmailAddress('invalid')).toBe(false);
+    expect(isValidEmailAddress('missing-domain@')).toBe(false);
+    expect(isValidEmailAddress('@missing-local.com')).toBe(false);
+    expect(isValidEmailAddress('two@@example.com')).toBe(false);
+  });
+
+
   it('hashPassword and verifyPassword should securely hash with salt and verify correctly', async () => {
     const rawPass = 'SecureAdmin#2026';
     const hash = await hashPassword(rawPass);
@@ -30,7 +43,7 @@ describe('Authentication Hardening, Cryptographic JWTs & Membership Authorizatio
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data).toHaveProperty('token');
-    expect(res.body.data.session.user.email).toBe('rohan@bringmybite.in');
+    expect(res.body.data.session.user.email).toBe(process.env.BOOTSTRAP_ADMIN_EMAIL || 'rohan@bringmybite.in');
 
     const token = res.body.data.token;
     expect(typeof token).toBe('string');
