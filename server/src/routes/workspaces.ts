@@ -2,17 +2,14 @@ import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { requireTenant } from '../middleware/tenant';
 import { Tenant } from '../types';
-import { pool } from '../db';
+import { pool, resolveDatabaseConfig } from '../db';
 
 const router = Router();
 
 function shouldUseFixtureWorkspaces(): boolean {
   // Fixtures are permitted only when tests are explicitly blocked from all database I/O.
   // Every deployable/non-test runtime must use membership-scoped PostgreSQL results.
-  return process.env.NODE_ENV === 'test' && process.env.VITEST !== 'false'
-    && process.env.DATABASE_URL === undefined
-    && process.env.TEST_DATABASE_URL === undefined
-    && process.env.DATABASE_TEST_URL === undefined;
+  return process.env.NODE_ENV === 'test' && resolveDatabaseConfig().isBlocked;
 }
 
 // Development-only workspace fixtures. They are reachable only in isolated, DB-blocked tests.
