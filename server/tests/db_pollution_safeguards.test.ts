@@ -11,6 +11,7 @@ import {
   parseDatabaseName,
   isSharedDevelopmentDatabase,
   isDedicatedTestDatabase,
+  isAllowedDatabaseTarget,
 } from '../src/db';
 import { verifyDatabaseConnection } from '../src/db/verifyConnection';
 import { signToken } from '../src/services/authService';
@@ -59,6 +60,14 @@ describe('Database Pollution Prevention & Test Safety Safeguards', () => {
       expect(isDedicatedTestDatabase('crm_test_isolated')).toBe(true);
       expect(isDedicatedTestDatabase('oneclick_crm')).toBe(false);
       expect(isDedicatedTestDatabase('production_crm')).toBe(false);
+    });
+
+    it('allows Supabase project postgres only for explicit Supabase hosts', () => {
+      expect(isAllowedDatabaseTarget('postgres', 'db.projectref.supabase.co')).toBe(true);
+      expect(isAllowedDatabaseTarget('postgres', 'aws-0-ap-south-1.pooler.supabase.com')).toBe(true);
+      expect(isAllowedDatabaseTarget('postgres', 'localhost')).toBe(false);
+      expect(isAllowedDatabaseTarget('oneclick_crm', 'localhost')).toBe(true);
+      expect(isAllowedDatabaseTarget('', 'db.projectref.supabase.co')).toBe(false);
     });
   });
 

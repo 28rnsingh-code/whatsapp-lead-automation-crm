@@ -13,7 +13,7 @@ The API and frontend are separate services. The app is not considered live until
 ## API service setup
 
 1. In Render, create a Blueprint from this repository and review that `oneclick-autonix-crm-api` remains on the **Free** plan. Do not approve an upgrade or paid resources.
-2. Set `DATABASE_URL` to the Supabase Postgres connection string (use the connection method shown in the Supabase dashboard; keep the value private).
+2. Set `DATABASE_URL` to the new CRM Supabase project's Postgres connection string (use the connection method shown in that project's dashboard; keep it private). Supabase names its database `postgres`; the migration preflight allows that name only when the hostname is an explicit Supabase direct/pooler endpoint, and continues to block local/default postgres targets.
 3. Set `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` (unique, at least 12 characters), and optionally `BOOTSTRAP_ADMIN_NAME`.
 4. Set `ENCRYPTION_KEY` to a randomly generated 32-character key or 64-character hex key. Never use a sample key or publish it.
 5. Deploy the API, verify `/api/health`, and use the private environment to run database migrations, then seed the initial administrator:

@@ -28,6 +28,19 @@ export function parseDatabaseName(connectionString?: string): string {
 }
 
 /**
+ * Supabase exposes one database per project named "postgres".
+ * Only allow that database name when the host is clearly a Supabase direct or pooler endpoint;
+ * local/default postgres databases remain blocked by the migration preflight.
+ */
+export function isAllowedDatabaseTarget(databaseName: string, hostname: string): boolean {
+  const database = databaseName.trim().toLowerCase();
+  const host = hostname.trim().toLowerCase();
+  if (!database || !host) return false;
+  if (database !== 'postgres') return true;
+  return host.endsWith('.supabase.co') || host.endsWith('.pooler.supabase.com');
+}
+
+/**
  * Checks if target database is the shared development database.
  */
 export function isSharedDevelopmentDatabase(dbName: string): boolean {

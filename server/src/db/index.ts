@@ -8,6 +8,7 @@ import {
   SHARED_DEV_DB_NAME,
   DEFAULT_TEST_DB_NAME,
   parseDatabaseName,
+  isAllowedDatabaseTarget,
   isSharedDevelopmentDatabase,
   isDedicatedTestDatabase,
   DatabaseConfig,
