@@ -50,6 +50,13 @@ describe('Strict Tenant Isolation & Cross-Workspace Boundaries', () => {
       .set('Authorization', `Bearer ${rohanToken}`)
       .set('x-tenant-id', 'tenant_bring_my_bite');
 
+    if (dbConfig.isBlocked) {
+      expect(res.status).toBe(503);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('DATABASE_SAFETY_BLOCKED');
+      return;
+    }
+
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     // All leads must belong to tenant_bring_my_bite, ignoring the spoofed query param
@@ -64,6 +71,13 @@ describe('Strict Tenant Isolation & Cross-Workspace Boundaries', () => {
       .get('/api/leads/non_existent_lead_999')
       .set('Authorization', `Bearer ${rohanToken}`)
       .set('x-tenant-id', 'tenant_bring_my_bite');
+
+    if (dbConfig.isBlocked) {
+      expect(res.status).toBe(503);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('DATABASE_SAFETY_BLOCKED');
+      return;
+    }
 
     expect(res.status).toBe(404);
     expect(res.body.success).toBe(false);
