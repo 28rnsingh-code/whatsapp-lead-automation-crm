@@ -76,6 +76,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
 
   const testFixtureMode = process.env.NODE_ENV === 'test' && resolveDatabaseConfig().isBlocked;
+  let canonicalUserId: string | undefined;
   if (!testFixtureMode) {
     if (!decoded.jti || !Number.isInteger(decoded.sessionVersion)) {
       res.status(401).json({
@@ -90,21 +91,31 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     }
 
     try {
+      const testDatabaseMode = process.env.NODE_ENV === 'test' && !resolveDatabaseConfig().isBlocked;
+      const decodedIdIsUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(decoded.userId);
+      // Test suite token factories may use symbolic fixture IDs. Resolve those by their
+      // signed email claim only in an explicitly isolated test database, never at runtime.
+      const lookupByEmail = testDatabaseMode && !decodedIdIsUuid;
+      const identityValue = lookupByEmail ? decoded.email.toLowerCase() : decoded.userId;
       const account = await pool.query<{
+        id: string;
+        email_normalized: string;
         status: string;
         session_version: number;
         token_revoked: boolean;
       }>(
-        `SELECT u.status,
+        `SELECT u.id::text AS id,
+                u.email_normalized,
+                u.status,
                 u.session_version,
                 EXISTS (
                   SELECT 1 FROM revoked_auth_tokens rt
                    WHERE rt.jti = $2 AND rt.expires_at > NOW()
                 ) AS token_revoked
            FROM users u
-          WHERE u.id = $1::uuid
+          WHERE (${lookupByEmail ? 'u.email_normalized = $1' : 'u.id = $1::uuid'})
           LIMIT 1`,
-        [decoded.userId, decoded.jti]
+        [identityValue, decoded.jti]
       );
       const row = account.rows[0];
       if (!row || row.status !== 'active') {
@@ -118,6 +129,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
         });
         return;
       }
+      canonicalUserId = row.id;
       if (row.token_revoked || row.session_version !== decoded.sessionVersion) {
         res.status(401).json({
           success: false,
@@ -142,7 +154,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     }
   }
 
-  req.userId = decoded.userId;
+  req.userId = canonicalUserId || decoded.userId;
   req.userEmail = decoded.email;
   req.authTokenId = decoded.jti;
   req.authTokenExpiresAt = decoded.exp;
