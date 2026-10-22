@@ -1,9 +1,11 @@
 import { Router, Request, Response } from 'express';
+import { createHash, randomBytes } from 'crypto';
 import { requireAuth } from '../middleware/auth';
-import { loginRateLimiter } from '../middleware/rateLimiter';
+import { loginRateLimiter, passwordResetRateLimiter } from '../middleware/rateLimiter';
 import { hashPassword, verifyPassword, signToken } from '../services/authService';
 import { SessionContext, RoleName } from '../types';
-import { pool } from '../db';
+import { pool, withTransaction } from '../db';
+import { isPasswordResetDeliveryConfigured, sendPasswordResetEmail } from '../services/emailService';
 
 const router = Router();
 
@@ -36,6 +38,7 @@ async function findDatabaseAuthRecord(selector: { email?: string; userId?: strin
   const result = await pool.query<DatabaseAuthRecord>(`
     SELECT u.id::text AS user_id, u.email_normalized AS email, u.display_name,
            u.password_hash, u.status AS user_status, u.created_at AS user_created_at,
+           u.session_version,
            t.id::text AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug,
            t.status AS tenant_status, t.timezone, t.currency, t.locale,
            t.created_at AS tenant_created_at, t.updated_at AS tenant_updated_at,
@@ -146,7 +149,7 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response): Pro
         return;
       }
       const session = sessionFromDatabase(record);
-      const token = signToken({ userId: record.user_id, email: record.email, defaultTenantId: record.tenant_id });
+      const token = signToken({ userId: record.user_id, email: record.email, defaultTenantId: record.tenant_id, sessionVersion: record.session_version });
       res.json({ success: true, data: { token, session }, meta: { requestId, serverTimestamp: new Date().toISOString() } });
       return;
     } catch {
@@ -292,46 +295,168 @@ router.get('/session', requireAuth, async (req: Request, res: Response): Promise
   });
 });
 
-// 3. Logout
-router.post('/logout', requireAuth, (req: Request, res: Response) => {
-  res.json({
-    success: true,
-    data: { message: 'Successfully signed out.' },
-    meta: {
-      requestId: req.requestId,
-    },
-  });
+// 3. Logout — revoke this token server-side instead of merely clearing the client.
+router.post('/logout', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const requestId = req.requestId || 'req_unknown';
+  if (shouldUseDatabaseAuth()) {
+    if (!req.authTokenId || !req.authTokenExpiresAt || !req.userId) {
+      res.status(401).json({ success: false, error: { code: 'INVALID_SESSION', message: 'The session cannot be revoked. Please sign in again.', requestId } });
+      return;
+    }
+    try {
+      await pool.query(
+        `INSERT INTO revoked_auth_tokens (jti, user_id, expires_at)
+         VALUES ($1, $2::uuid, to_timestamp($3))
+         ON CONFLICT (jti) DO NOTHING`,
+        [req.authTokenId, req.userId, req.authTokenExpiresAt]
+      );
+    } catch {
+      res.status(503).json({ success: false, error: { code: 'LOGOUT_UNAVAILABLE', message: 'Sign-out could not be confirmed. Please retry.', requestId } });
+      return;
+    }
+  }
+  res.json({ success: true, data: { message: 'Successfully signed out.' }, meta: { requestId } });
 });
 
-// 4. Forgot Password (Safe Enumeration-Free Response)
-router.post('/forgot-password', (req: Request, res: Response): void => {
-  const { email } = req.body;
-  if (shouldUseDatabaseAuth()) {
-    res.status(501).json({ success: false, error: { code: 'PASSWORD_RECOVERY_NOT_CONFIGURED', message: 'Password recovery is not configured. Contact your workspace administrator.', requestId: req.requestId || 'req_unknown' } });
+// 4. Password recovery: one-time random tokens, SHA-256 hashes at rest, bounded TTL, and generic responses.
+function validNewPassword(password: string): boolean {
+  return password.length >= 12 && password.length <= 128
+    && /[a-z]/.test(password)
+    && /[A-Z]/.test(password)
+    && /[0-9]/.test(password)
+    && /[^A-Za-z0-9]/.test(password);
+}
+
+const passwordResetMessage = 'If the email is linked to an active account, a reset email will be attempted. Contact your workspace administrator if it does not arrive.';
+
+router.post('/forgot-password', passwordResetRateLimiter, async (req: Request, res: Response): Promise<void> => {
+  const requestId = req.requestId || 'req_unknown';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {
+    res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Enter a valid email address.', requestId } });
     return;
   }
-  if (!email) {
+  if (!shouldUseDatabaseAuth() || !isPasswordResetDeliveryConfigured()) {
+    res.status(503).json({ success: false, error: { code: 'PASSWORD_RECOVERY_NOT_CONFIGURED', message: 'Password recovery requires configured database storage and email delivery.', requestId } });
+    return;
+  }
+
+  try {
+    const result = await pool.query<{ id: string; email: string; display_name: string }>(
+      `SELECT id::text AS id, email_normalized AS email, display_name
+         FROM users
+        WHERE email_normalized = $1 AND status = 'active'
+        LIMIT 1`,
+      [email]
+    );
+    const user = result.rows[0];
+    if (user) {
+      const rawToken = randomBytes(32).toString('base64url');
+      const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+      const configuredTtl = Number.parseInt(process.env.PASSWORD_RESET_TOKEN_EXPIRES_MINUTES || '15', 10);
+      const ttlMinutes = Number.isInteger(configuredTtl) ? Math.min(60, Math.max(5, configuredTtl)) : 15;
+
+      await withTransaction(async (client) => {
+        await client.query(
+          'UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = $1::uuid AND used_at IS NULL',
+          [user.id]
+        );
+        await client.query(
+          `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+           VALUES ($1::uuid, $2, NOW() + ($3::int * INTERVAL '1 minute'))`,
+          [user.id, tokenHash, ttlMinutes]
+        );
+      });
+
+      try {
+        const resetUrl = new URL('/reset-password', process.env.APP_PUBLIC_URL);
+        resetUrl.searchParams.set('token', rawToken);
+        await sendPasswordResetEmail(email, user.display_name, resetUrl.toString());
+      } catch (error) {
+        // Keep account enumeration resistant. Invalidate a link that could not be delivered.
+        await pool.query(
+          'UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = $1::uuid AND token_hash = $2 AND used_at IS NULL',
+          [user.id, tokenHash]
+        ).catch(() => undefined);
+        console.error(`[Auth Recovery] Delivery failed for request ${requestId}.`, error instanceof Error ? error.message : 'Unknown mail provider error');
+      }
+    }
+
+    // Same status/body for known and unknown accounts; this confirms acceptance, not delivery.
+    res.status(202).json({ success: true, data: { message: passwordResetMessage }, meta: { requestId } });
+  } catch {
+    res.status(503).json({ success: false, error: { code: 'PASSWORD_RECOVERY_UNAVAILABLE', message: 'Password recovery is temporarily unavailable. Please retry later.', requestId } });
+  }
+});
+
+router.post('/reset-password', passwordResetRateLimiter, async (req: Request, res: Response): Promise<void> => {
+  const requestId = req.requestId || 'req_unknown';
+  const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (token.length < 32 || token.length > 256 || !validNewPassword(password)) {
     res.status(400).json({
       success: false,
       error: {
         code: 'VALIDATION_ERROR',
-        message: 'Email address is required.',
-        requestId: req.requestId || 'req_unknown',
+        message: 'Provide a valid recovery token and a password of at least 12 characters with upper/lowercase letters, a number, and a symbol.',
+        requestId,
       },
     });
     return;
   }
+  if (!shouldUseDatabaseAuth()) {
+    res.status(503).json({ success: false, error: { code: 'PASSWORD_RECOVERY_UNAVAILABLE', message: 'Password recovery is not enabled in test-fixture mode.', requestId } });
+    return;
+  }
 
-  // Security invariant: never leak user account existence
-  res.json({
-    success: true,
-    data: {
-      message: 'If an account exists for this email, password recovery instructions have been dispatched.',
-    },
-    meta: {
-      requestId: req.requestId,
-    },
-  });
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  const passwordHash = await hashPassword(password);
+  try {
+    const reset = await withTransaction(async (client) => {
+      const tokenRow = await client.query<{ id: string; user_id: string }>(
+        `SELECT prt.id::text AS id, prt.user_id::text AS user_id
+           FROM password_reset_tokens prt
+           JOIN users u ON u.id = prt.user_id AND u.status = 'active'
+          WHERE prt.token_hash = $1 AND prt.used_at IS NULL AND prt.expires_at > NOW()
+          FOR UPDATE OF prt, u`,
+        [tokenHash]
+      );
+      const row = tokenRow.rows[0];
+      if (!row) return false;
+
+      const changed = await client.query(
+        `UPDATE users
+            SET password_hash = $1,
+                password_changed_at = NOW(),
+                session_version = session_version + 1,
+                updated_at = NOW()
+          WHERE id = $2::uuid AND status = 'active'`,
+        [passwordHash, row.user_id]
+      );
+      if (changed.rowCount !== 1) return false;
+
+      await client.query(
+        'UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = $1::uuid AND used_at IS NULL',
+        [row.user_id]
+      );
+      await client.query(
+        `INSERT INTO audit_events (tenant_id, actor_user_id, action, entity_type, entity_id, request_id, safe_metadata)
+         SELECT m.tenant_id, $1::uuid, 'password_reset', 'user', $1::uuid, $2, '{}'::jsonb
+           FROM memberships m
+          WHERE m.user_id = $1::uuid AND m.status = 'active'`,
+        [row.user_id, requestId]
+      );
+      return true;
+    });
+
+    if (!reset) {
+      res.status(400).json({ success: false, error: { code: 'RESET_TOKEN_INVALID', message: 'This reset link is invalid, expired, or already used. Request a new one.', requestId } });
+      return;
+    }
+    res.json({ success: true, data: { message: 'Password changed. Please sign in again on your devices.' }, meta: { requestId } });
+  } catch {
+    res.status(503).json({ success: false, error: { code: 'PASSWORD_RESET_UNAVAILABLE', message: 'Password reset is temporarily unavailable. Please retry later.', requestId } });
+  }
 });
 
 export default router;
