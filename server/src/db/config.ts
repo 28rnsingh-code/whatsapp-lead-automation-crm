@@ -28,6 +28,19 @@ export function parseDatabaseName(connectionString?: string): string {
 }
 
 /**
+ * Supabase exposes one database per project named "postgres".
+ * Only allow that database name when the host is clearly a Supabase direct or pooler endpoint;
+ * local/default postgres databases remain blocked by the migration preflight.
+ */
+export function isAllowedDatabaseTarget(databaseName: string, hostname: string): boolean {
+  const database = databaseName.trim().toLowerCase();
+  const host = hostname.trim().toLowerCase();
+  if (!database || !host) return false;
+  if (database !== 'postgres') return true;
+  return host.endsWith('.supabase.co') || host.endsWith('.pooler.supabase.com');
+}
+
+/**
  * Checks if target database is the shared development database.
  */
 export function isSharedDevelopmentDatabase(dbName: string): boolean {
@@ -122,11 +135,19 @@ export function resolveDatabaseConfig(): DatabaseConfig {
     };
   }
 
-  // Development or Production runtime
-  const connStr = process.env.DATABASE_URL || 'postgresql://postgres:postgres_password@localhost:5432/oneclick_crm';
+  // No non-test runtime may guess a database endpoint or silently connect to a shared local database.
+  const configuredUrl = process.env.DATABASE_URL?.trim();
+  if (!configuredUrl) {
+    throw new Error('CRITICAL CONFIGURATION ERROR: Set DATABASE_URL to a newly provisioned, isolated CRM database before starting the server.');
+  }
+  const parsed = new URL(configuredUrl);
+  if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !parsed.hostname || !parsed.pathname.replace(/^\//, '')) {
+    throw new Error('CRITICAL CONFIGURATION ERROR: DATABASE_URL is not a valid PostgreSQL connection URL.');
+  }
+
   return {
-    connectionString: connStr,
-    databaseName: parseDatabaseName(connStr),
+    connectionString: configuredUrl,
+    databaseName: parseDatabaseName(configuredUrl),
     isTestEnvironment: false,
     isBlocked: false,
   };

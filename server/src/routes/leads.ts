@@ -7,6 +7,19 @@ import { DEFAULT_TENANT_ID, DEFAULT_USER_ID } from '../db/seed';
 
 const router = Router();
 
+async function resolveOwnerName(userId?: string | null): Promise<string | undefined> {
+  if (!userId) return undefined;
+  try {
+    const result = await pool.query<{ display_name: string }>(
+      'SELECT display_name FROM users WHERE id = $1::uuid LIMIT 1;',
+      [userId],
+    );
+    return result.rows[0]?.display_name;
+  } catch {
+    return undefined;
+  }
+}
+
 const TENANT_UUID_MAP: Record<string, string> = {
   tenant_bring_my_bite: DEFAULT_TENANT_ID,
   tenant_automics_labs: 'a0000000-0000-0000-0000-000000000002',
@@ -14,8 +27,8 @@ const TENANT_UUID_MAP: Record<string, string> = {
 
 // Helper to normalize tenant ID to database UUID
 function toDbTenantId(id: string): string {
-  if (!id) return DEFAULT_TENANT_ID;
-  if (TENANT_UUID_MAP[id]) return TENANT_UUID_MAP[id];
+  // Friendly tenant aliases exist only for legacy isolated test fixtures.
+  if (process.env.NODE_ENV === 'test' && TENANT_UUID_MAP[id]) return TENANT_UUID_MAP[id];
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (uuidRegex.test(id)) return id;
   return '00000000-0000-0000-0000-000000000000';
@@ -32,12 +45,12 @@ function fromDbTenantId(id: string): string {
 }
 
 function toDbUserId(id?: string): string | null {
-  if (id === 'user_rohan_singh' || !id) {
-    return DEFAULT_USER_ID;
-  }
-  // Validate if valid UUID, otherwise null
+  if (!id) return null;
+  // Legacy identity is used only by isolated development/test fixtures.
+  if (id === 'user_rohan_singh' && process.env.NODE_ENV === 'test') return DEFAULT_USER_ID;
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  return uuidRegex.test(id) ? id : DEFAULT_USER_ID;
+  if (uuidRegex.test(id)) return id;
+  return null;
 }
 
 // 1. List Leads (Strictly Tenant-Isolated from PostgreSQL)
@@ -110,7 +123,7 @@ router.get('/', requireAuth, requireTenant(), async (req: Request, res: Response
          COALESCE(ps.color_token, '#155eef') as "stageColor",
          l.qualification_status as "qualificationStatus",
          l.owner_user_id as "ownerUserId",
-         COALESCE(u.display_name, 'Rohan Singh') as "ownerName",
+         COALESCE(u.display_name, 'Unassigned') as "ownerName",
          l.deal_value_minor_units as "dealValueMinorUnits",
          l.currency,
          l.next_action as "nextAction",
@@ -146,27 +159,38 @@ router.get('/', requireAuth, requireTenant(), async (req: Request, res: Response
       },
     });
   } catch (error: any) {
-    if (error.name === 'DatabaseSafetyError') {
-      res.json({
-        success: true,
-        data: [],
-        meta: {
-          page: 1,
-          pageSize: 10,
-          totalCount: 0,
-          totalPages: 0,
-          requestId: req.requestId,
+    const requestId = req.requestId || 'req_unknown';
+    if (error?.name === 'DatabaseSafetyError') {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'DATABASE_SAFETY_BLOCKED',
+          message: 'Database access is blocked by the active safety policy.',
+          requestId,
         },
       });
       return;
     }
-    console.error('[Leads API] Error fetching leads from PostgreSQL:', error.message);
+    const unavailable = typeof error?.code === 'string'
+      && (/^08/.test(error.code) || ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', '57P01', '57P02', '57P03', '53300'].includes(error.code));
+    if (unavailable) {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'DATABASE_UNAVAILABLE',
+          message: 'The database is temporarily unavailable. Please retry shortly.',
+          requestId,
+        },
+      });
+      return;
+    }
+    console.error('[Leads API] Error fetching leads from PostgreSQL:', error?.message || 'Unknown error');
     res.status(500).json({
       success: false,
       error: {
         code: 'DATABASE_ERROR',
         message: 'Failed to retrieve leads from database.',
-        requestId: req.requestId || 'req_unknown',
+        requestId,
       },
     });
   }
@@ -176,12 +200,16 @@ router.get('/', requireAuth, requireTenant(), async (req: Request, res: Response
 router.post('/', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const { name, phoneRaw, email, companyName, source, stageId, dealValue, notes, nextAction } = req.body;
+  const consentStatus = typeof req.body?.consentStatus === 'string' ? req.body.consentStatus : 'Unknown';
   const requestId = req.requestId || 'req_unknown';
 
   // Validation
   const errors: Record<string, string[]> = {};
   if (!name || !name.trim()) errors.name = ['Name is required.'];
   if (!phoneRaw || !phoneRaw.trim()) errors.phoneRaw = ['Phone number is required.'];
+  if (!['Unknown', 'Consented', 'Opted Out'].includes(consentStatus)) {
+    errors.consentStatus = ['Consent status must be Unknown, Consented, or Opted Out.'];
+  }
 
   if (Object.keys(errors).length > 0) {
     res.status(400).json({
@@ -261,7 +289,9 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
          deal_value_minor_units, currency, next_action, consent_status, notes,
          created_by
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, 'In Review', $9, $10, 'INR', $11, 'Consented', $12, $13
+         $1, $2, $3, $4, $5, $6, $7, $8, 'In Review', $9, $10,
+         (SELECT currency FROM tenants WHERE id = $1::uuid),
+         $11, $12, $13, $14
        )
        RETURNING *;`,
       [
@@ -276,12 +306,14 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
         ownerUserId,
         dealValueMinorUnits,
         nextAction || 'Call',
+        consentStatus,
         notes?.trim() || '',
         ownerUserId,
       ]
     );
 
     const created = insertResult.rows[0];
+    const ownerName = await resolveOwnerName(created.owner_user_id);
 
     // Record initial lead creation activity
     await pool.query(
@@ -315,7 +347,7 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
       stageColor: targetStageColor,
       qualificationStatus: created.qualification_status,
       ownerUserId: created.owner_user_id || undefined,
-      ownerName: 'Rohan Singh',
+      ownerName: ownerName || 'Unassigned',
       dealValueMinorUnits: Number(created.deal_value_minor_units),
       currency: created.currency,
       nextAction: created.next_action,
@@ -329,7 +361,7 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
           activityType: 'lead_created',
           summary: `Lead created via ${created.source} with initial stage "${targetStageName}".`,
           occurredAt: created.created_at,
-          actorName: 'Rohan Singh',
+          actorName: ownerName || 'System',
         },
       ],
     };
@@ -386,7 +418,7 @@ router.get('/:id', requireAuth, requireTenant(), async (req: Request, res: Respo
          COALESCE(ps.color_token, '#155eef') as "stageColor",
          l.qualification_status as "qualificationStatus",
          l.owner_user_id as "ownerUserId",
-         COALESCE(u.display_name, 'Rohan Singh') as "ownerName",
+         COALESCE(u.display_name, 'Unassigned') as "ownerName",
          l.deal_value_minor_units as "dealValueMinorUnits",
          l.currency,
          l.next_action as "nextAction",
@@ -448,18 +480,31 @@ router.get('/:id', requireAuth, requireTenant(), async (req: Request, res: Respo
       },
     });
   } catch (error: any) {
-    if (error.name === 'DatabaseSafetyError') {
-      res.status(404).json({
+    if (error?.name === 'DatabaseSafetyError') {
+      res.status(503).json({
         success: false,
         error: {
-          code: 'NOT_FOUND',
-          message: 'Lead not found in this workspace.',
+          code: 'DATABASE_SAFETY_BLOCKED',
+          message: 'Database access is blocked by the active safety policy.',
           requestId: req.requestId || 'req_unknown',
         },
       });
       return;
     }
-    console.error('[Leads API] Error fetching lead by id from PostgreSQL:', error.message);
+    const unavailable = typeof error?.code === 'string'
+      && (/^08/.test(error.code) || ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', '57P01', '57P02', '57P03', '53300'].includes(error.code));
+    if (unavailable) {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'DATABASE_UNAVAILABLE',
+          message: 'The database is temporarily unavailable. Please retry shortly.',
+          requestId: req.requestId || 'req_unknown',
+        },
+      });
+      return;
+    }
+    console.error('[Leads API] Error fetching lead by id from PostgreSQL:', error?.message || 'Unknown error');
     res.status(500).json({
       success: false,
       error: {
@@ -592,6 +637,7 @@ router.patch('/:id', requireAuth, requireTenant(), async (req: Request, res: Res
 
     const updateResult = await pool.query(updateQuery, values);
     const updated = updateResult.rows[0];
+    const updatedOwnerName = await resolveOwnerName(updated?.owner_user_id);
 
     // Log activity if stage changed
     if (targetStageName && targetStageName !== current.stage_name) {
@@ -617,7 +663,7 @@ router.patch('/:id', requireAuth, requireTenant(), async (req: Request, res: Res
       stageColor: targetStageColor || '#155eef',
       qualificationStatus: updated.qualification_status,
       ownerUserId: updated.owner_user_id || undefined,
-      ownerName: 'Rohan Singh',
+      ownerName: updatedOwnerName || 'Unassigned',
       dealValueMinorUnits: Number(updated.deal_value_minor_units),
       currency: updated.currency,
       nextAction: updated.next_action,
@@ -731,7 +777,7 @@ router.post('/:id/activities', requireAuth, requireTenant(), async (req: Request
       success: true,
       data: {
         ...insertResult.rows[0],
-        actorName: 'Rohan Singh',
+        actorName: userId ? (req.userEmail || 'Workspace member') : 'System',
       },
       meta: { requestId },
     });

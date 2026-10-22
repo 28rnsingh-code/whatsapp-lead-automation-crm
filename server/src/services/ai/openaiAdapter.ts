@@ -1,4 +1,5 @@
 import { AiProviderAdapter, GenerateReplyParams, GenerateReplyResult } from './types';
+import { appendProviderPath, resolveHttpsProviderEndpoint } from '../providerEndpoints';
 
 export class OpenAiAdapter implements AiProviderAdapter {
   readonly id = 'openai';
@@ -18,7 +19,8 @@ export class OpenAiAdapter implements AiProviderAdapter {
     }
 
     try {
-      const res = await fetch('https://api.openai.com/v1/models', {
+      const modelsEndpoint = appendProviderPath(resolveHttpsProviderEndpoint('OPENAI_API_BASE_URL', 'api.openai.com', '/v1'), ['models']);
+      const res = await fetch(modelsEndpoint, {
         headers: { Authorization: `Bearer ${apiKey}` },
       });
       if (!res.ok) {
@@ -56,7 +58,8 @@ export class OpenAiAdapter implements AiProviderAdapter {
     ];
 
     try {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      const completionsEndpoint = appendProviderPath(resolveHttpsProviderEndpoint('OPENAI_API_BASE_URL', 'api.openai.com', '/v1'), ['chat', 'completions']);
+      const res = await fetch(completionsEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

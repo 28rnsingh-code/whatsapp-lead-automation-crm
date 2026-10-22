@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "hardening/**"
+      - "qa/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build, isolated PostgreSQL integration tests, and quality checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_ENV: test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/oneclick_crm_test
+      BOOTSTRAP_ADMIN_EMAIL: rohan@bringmybite.in
+      BOOTSTRAP_ADMIN_PASSWORD: CRM_Test_Only#2026
+      BOOTSTRAP_ADMIN_NAME: CRM QA Admin
+      WORKSPACE_NAME: OneClick CRM QA Workspace
+      WORKSPACE_SLUG: oneclick-crm-qa-workspace
+      DEFAULT_TIMEZONE: Asia/Kolkata
+      DEFAULT_CURRENCY: INR
+      DEFAULT_LOCALE: en-IN
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: oneclick_crm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d oneclick_crm_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies from lockfile
+        run: npm ci --no-audit --fund=false
+      - name: Build server and client
+        run: npm run build
+      - name: Run source quality checks
+        run: npm run lint
+      - name: Apply schema migrations to isolated PostgreSQL
+        run: npm run migrate
+      - name: Seed synthetic test fixtures into isolated PostgreSQL
+        run: npm run seed
+      - name: Run automated unit, API, security, and database tests
+        run: npm test

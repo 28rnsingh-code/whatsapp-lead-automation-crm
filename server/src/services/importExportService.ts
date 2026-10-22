@@ -326,16 +326,24 @@ export async function executeImportBatch(
   let skippedCount = 0;
   const failedCount = errors.length;
 
-  // Resolve default stage for tenant if live DB is active
+  // Resolve the tenant-owned currency and default stage from PostgreSQL.
   let defaultStageId: string | null = null;
+  let tenantCurrency: string | null = null;
   if (!dbConfig.isBlocked) {
-    try {
-      const stageRes = await pool.query<{ id: string }>(
-        `SELECT id FROM pipeline_stages WHERE tenant_id = $1 ORDER BY sort_order ASC LIMIT 1;`,
-        [tenantId]
-      );
-      if (stageRes.rows.length > 0) defaultStageId = stageRes.rows[0].id;
-    } catch {}
+    const tenantResult = await pool.query<{ currency: string }>(
+      'SELECT currency FROM tenants WHERE id = $1::uuid LIMIT 1;',
+      [tenantId]
+    );
+    tenantCurrency = tenantResult.rows[0]?.currency || null;
+    if (!tenantCurrency) {
+      throw new Error('The selected CRM workspace has no configured currency.');
+    }
+
+    const stageRes = await pool.query<{ id: string }>(
+      'SELECT id FROM pipeline_stages WHERE tenant_id = $1::uuid ORDER BY sort_order ASC LIMIT 1;',
+      [tenantId]
+    );
+    if (stageRes.rows.length > 0) defaultStageId = stageRes.rows[0].id;
   }
 
   // Filter and process rows according to duplicate strategy
@@ -371,7 +379,7 @@ export async function executeImportBatch(
                 tenant_id, name, phone_raw, phone_normalized, email, company_name,
                 source, stage_id, deal_value_minor_units, currency, next_action,
                 consent_status, notes, created_by
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'INR', 'Call', 'Consented', $10, $11);`,
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'Call', 'Unknown', $11, $12);`,
               [
                 tenantId,
                 row.name,
@@ -382,6 +390,7 @@ export async function executeImportBatch(
                 row.source,
                 defaultStageId,
                 row.dealValueMinorUnits || 0,
+                tenantCurrency,
                 row.notes || '',
                 userId || DEFAULT_USER_ID,
               ]
@@ -505,7 +514,8 @@ export function generateLeadsCsv(leads: any[]): string {
     'Company',
     'Source',
     'Stage',
-    'Deal Value (INR)',
+    'Deal Value',
+    'Currency',
     'Next Action',
     'Consent Status',
     'Created At',
@@ -530,6 +540,7 @@ export function generateLeadsCsv(leads: any[]): string {
     escapeCsv(l.source),
     escapeCsv(l.stageName || l.stage_id),
     escapeCsv(((Number(l.dealValueMinorUnits || l.deal_value_minor_units || 0)) / 100).toFixed(2)),
+    escapeCsv(l.currency),
     escapeCsv(l.nextAction || l.next_action),
     escapeCsv(l.consentStatus || l.consent_status),
     escapeCsv(l.createdAt || l.created_at),
@@ -551,7 +562,8 @@ export function generateLeadsExcelBuffer(leads: any[]): Buffer {
     'Company': sanitizeCellValue(l.companyName || l.company_name),
     'Source': sanitizeCellValue(l.source),
     'Stage': sanitizeCellValue(l.stageName || l.stage_id),
-    'Deal Value (INR)': (Number(l.dealValueMinorUnits || l.deal_value_minor_units || 0)) / 100,
+    'Deal Value': (Number(l.dealValueMinorUnits || l.deal_value_minor_units || 0)) / 100,
+    'Currency': sanitizeCellValue(l.currency),
     'Next Action': sanitizeCellValue(l.nextAction || l.next_action),
     'Consent Status': sanitizeCellValue(l.consentStatus || l.consent_status),
     'Created At': sanitizeCellValue(l.createdAt || l.created_at),

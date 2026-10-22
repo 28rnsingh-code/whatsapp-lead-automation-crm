@@ -57,11 +57,7 @@ router.get('/stages', requireAuth, requireTenant(), async (req: Request, res: Re
     );
 
     if (result.rows.length === 0) {
-      res.json({
-        success: true,
-        data: DEFAULT_STAGES.map(s => ({ ...s, tenantId: rawTenantId })),
-        meta: { totalCount: DEFAULT_STAGES.length, requestId },
-      });
+      res.json({ success: true, data: [], meta: { totalCount: 0, requestId } });
       return;
     }
 
@@ -71,11 +67,15 @@ router.get('/stages', requireAuth, requireTenant(), async (req: Request, res: Re
       meta: { totalCount: result.rows.length, requestId },
     });
   } catch (error: any) {
-    res.json({
-      success: true,
-      data: DEFAULT_STAGES.map(s => ({ ...s, tenantId: rawTenantId })),
-      meta: { totalCount: DEFAULT_STAGES.length, requestId },
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database is temporarily unavailable. Please retry shortly.',
+        requestId: requestId,
+      },
     });
+    return;
   }
 });
 

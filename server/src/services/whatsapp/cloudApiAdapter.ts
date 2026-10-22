@@ -6,6 +6,7 @@ import {
   OutboundMessageResult,
   InboundMessageEvent,
 } from './types';
+import { appendProviderPath, resolveHttpsProviderEndpoint } from '../providerEndpoints';
 
 export class CloudApiWhatsAppAdapter implements WhatsAppProviderAdapter {
   readonly id = 'cloud_api';
@@ -68,8 +69,8 @@ export class CloudApiWhatsAppAdapter implements WhatsAppProviderAdapter {
       };
     }
 
-    // When running with mock/test tokens, simulate successful dispatch
-    if (credentials.accessToken.includes('mock') || credentials.accessToken.startsWith('test_')) {
+    // Synthetic tokens may simulate delivery only in automated tests, never in a deployed runtime.
+    if (process.env.NODE_ENV === 'test' && (credentials.accessToken.includes('mock') || credentials.accessToken.startsWith('test_'))) {
       return {
         success: true,
         providerMessageId: `wamid.HBgL${Date.now()}${Math.random().toString(36).substring(2, 6)}`,
@@ -78,7 +79,11 @@ export class CloudApiWhatsAppAdapter implements WhatsAppProviderAdapter {
     }
 
     try {
-      const response = await fetch(`https://graph.facebook.com/v18.0/${credentials.phoneNumberId}/messages`, {
+      const endpoint = appendProviderPath(
+        resolveHttpsProviderEndpoint('WHATSAPP_API_ENDPOINT', 'graph.facebook.com', /^\/v\d+\.\d+$/),
+        [credentials.phoneNumberId, 'messages'],
+      );
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

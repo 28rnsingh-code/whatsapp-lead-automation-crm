@@ -1,6 +1,10 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import dotenv from 'dotenv';
+
+// Load private local environment before deriving JWT settings. Hosted environments can inject vars directly.
+dotenv.config();
 
 // If no JWT_SECRET is configured in environment, generate an in-memory 64-byte random key
 // This guarantees signatures cannot be forged using default/empty secrets.
@@ -21,6 +25,8 @@ export interface AuthTokenPayload {
   defaultTenantId?: string;
   iat?: number;
   exp?: number;
+  jti?: string;
+  sessionVersion?: number;
 }
 
 /**
@@ -46,7 +52,10 @@ export function signToken(
   payload: Omit<AuthTokenPayload, 'iat' | 'exp'>,
   expiresIn: string = process.env.JWT_EXPIRES_IN || '24h'
 ): string {
-  return jwt.sign(payload, JWT_SECRET, {
+  const testPayload = process.env.NODE_ENV === 'test' && payload.sessionVersion === undefined
+    ? { ...payload, sessionVersion: 0 }
+    : payload;
+  return jwt.sign({ ...testPayload, jti: payload.jti || crypto.randomUUID() }, JWT_SECRET, {
     algorithm: 'HS256',
     expiresIn: expiresIn as any,
   });

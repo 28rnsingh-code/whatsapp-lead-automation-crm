@@ -18,7 +18,9 @@
     "test": "npm run test --workspace=server",
     "db:check": "npm run db:check --workspace=server",
     "migrate": "npm run migrate --workspace=server",
-    "lint": "echo \"Linting clean\""
+    "typecheck": "npm run build",
+    "lint": "node scripts/lint.mjs",
+    "seed": "npm run seed --workspace=server"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

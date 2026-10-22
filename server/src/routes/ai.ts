@@ -104,22 +104,15 @@ router.get('/config', requireAuth, requireTenant(), async (req: Request, res: Re
       meta: { requestId },
     });
   } catch (error: any) {
-    res.json({
-      success: true,
-      data: {
-        config: maskAiConfig({
-          provider: 'mock',
-          model: 'mock-fast-reply',
-          mode: 'disabled',
-          confidenceThreshold: 0.75,
-          maxOutputChars: 300,
-          enabled: false,
-          status: 'unconfigured',
-        }),
-        supportedProviders: getAllSupportedAiProviders(),
+    res.status(503).json({
+      success: false,
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'Database is temporarily unavailable. Please retry shortly.',
+        requestId: requestId,
       },
-      meta: { requestId },
     });
+    return;
   }
 });
 

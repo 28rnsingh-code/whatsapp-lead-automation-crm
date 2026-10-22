@@ -4,24 +4,32 @@ import { MockWhatsAppAdapter } from './mockAdapter';
 import { CloudApiWhatsAppAdapter } from './cloudApiAdapter';
 import { GupshupWhatsAppAdapter } from './gupshupAdapter';
 
-const adapters: Record<WhatsAppProviderType, WhatsAppProviderAdapter> = {
+const adapters: Partial<Record<WhatsAppProviderType, WhatsAppProviderAdapter>> = {
   mock: new MockWhatsAppAdapter(),
   cloud_api: new CloudApiWhatsAppAdapter(),
   gupshup: new GupshupWhatsAppAdapter(),
-  twilio: new MockWhatsAppAdapter(), // fallback for twilio
 };
 
 export function getWhatsAppAdapter(provider: WhatsAppProviderType = 'cloud_api'): WhatsAppProviderAdapter {
-  return adapters[provider] || adapters.mock;
+  if (provider === 'mock' && process.env.NODE_ENV === 'production') {
+    throw new Error('The mock WhatsApp provider is disabled in production.');
+  }
+  const adapter = adapters[provider];
+  if (!adapter) {
+    throw new Error(`WhatsApp provider "${provider}" is not implemented and is disabled.`);
+  }
+  return adapter;
 }
 
 export function getAllSupportedWhatsAppProviders(): Array<{ id: WhatsAppProviderType; name: string }> {
-  return [
+  const providers: Array<{ id: WhatsAppProviderType; name: string }> = [
     { id: 'cloud_api', name: 'Meta Official WhatsApp Cloud API' },
     { id: 'gupshup', name: 'Gupshup Enterprise WhatsApp API' },
-    { id: 'twilio', name: 'Twilio WhatsApp API' },
-    { id: 'mock', name: 'Local Test Mock Provider' },
   ];
+  if (process.env.NODE_ENV !== 'production') {
+    providers.push({ id: 'mock', name: 'Local Test Mock Provider' });
+  }
+  return providers;
 }
 
 export function maskSecret(secret?: string): string {
@@ -48,9 +56,17 @@ export function maskCredentials(config: any): MaskedWhatsAppCredentials {
   };
 }
 
-// AES-256-GCM encryption for storing secrets at rest
-const ENCRYPTION_SECRET = process.env.ENCRYPTION_KEY || 'oneclick_crm_secret_key_32bytes!';
-const ENCRYPTION_KEY = crypto.createHash('sha256').update(ENCRYPTION_SECRET).digest();
+// AES-256-GCM encryption for provider secrets at rest.
+// Production requires a private, stable ENCRYPTION_KEY. A process-random key is used only for
+// local/test runs without configuration; any data encrypted with it is unreadable after restart.
+const ENCRYPTION_SECRET = process.env.ENCRYPTION_KEY;
+if (process.env.NODE_ENV === 'production' && (!ENCRYPTION_SECRET || ENCRYPTION_SECRET.length < 32)) {
+  throw new Error('CRITICAL SECURITY ERROR: ENCRYPTION_KEY must be configured with at least 32 characters in production.');
+}
+const ENCRYPTION_KEY = crypto
+  .createHash('sha256')
+  .update(ENCRYPTION_SECRET || crypto.randomBytes(32).toString('hex'))
+  .digest();
 
 export function encryptSecret(plainText: string): string {
   if (!plainText) return '';

@@ -11,6 +11,7 @@ import {
   parseDatabaseName,
   isSharedDevelopmentDatabase,
   isDedicatedTestDatabase,
+  isAllowedDatabaseTarget,
 } from '../src/db';
 import { verifyDatabaseConnection } from '../src/db/verifyConnection';
 import { signToken } from '../src/services/authService';
@@ -59,6 +60,14 @@ describe('Database Pollution Prevention & Test Safety Safeguards', () => {
       expect(isDedicatedTestDatabase('crm_test_isolated')).toBe(true);
       expect(isDedicatedTestDatabase('oneclick_crm')).toBe(false);
       expect(isDedicatedTestDatabase('production_crm')).toBe(false);
+    });
+
+    it('allows Supabase project postgres only for explicit Supabase hosts', () => {
+      expect(isAllowedDatabaseTarget('postgres', 'db.projectref.supabase.co')).toBe(true);
+      expect(isAllowedDatabaseTarget('postgres', 'aws-0-ap-south-1.pooler.supabase.com')).toBe(true);
+      expect(isAllowedDatabaseTarget('postgres', 'localhost')).toBe(false);
+      expect(isAllowedDatabaseTarget('oneclick_crm', 'localhost')).toBe(true);
+      expect(isAllowedDatabaseTarget('', 'db.projectref.supabase.co')).toBe(false);
     });
   });
 
@@ -160,7 +169,7 @@ describe('Database Pollution Prevention & Test Safety Safeguards', () => {
       expect(res.body.error.message).toContain('Safety guard violation');
     });
 
-    it('HTTP GET /api/leads safely returns empty dataset without querying blocked development database', async () => {
+    it('HTTP GET /api/leads reports database safety blocking rather than a false empty success', async () => {
       delete process.env.TEST_DATABASE_URL;
       process.env.DATABASE_URL = 'postgresql://oneclick_dev:DevPass2026SecureCrmKey99@localhost:5434/oneclick_crm';
 
@@ -169,11 +178,9 @@ describe('Database Pollution Prevention & Test Safety Safeguards', () => {
         .set('Authorization', `Bearer ${rohanToken}`)
         .set('x-tenant-id', 'tenant_bring_my_bite');
 
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(Array.isArray(res.body.data)).toBe(true);
-      expect(res.body.data.length).toBe(0);
-      expect(res.body.meta.totalCount).toBe(0);
+      expect(res.status).toBe(503);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('DATABASE_SAFETY_BLOCKED');
     });
   });
 });

@@ -62,4 +62,55 @@ describe('Database Migration & Multi-Tenant DDL Verification', () => {
     expect(content).toContain('CREATE INDEX IF NOT EXISTS idx_tasks_tenant_owner_status ON tasks(tenant_id, owner_user_id, status);');
     expect(content).toContain('CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_time ON audit_events(tenant_id, occurred_at DESC);');
   });
+
+  it('adds a defense-in-depth lockdown for Supabase public API roles', () => {
+    const accessPath = path.join(__dirname, '../src/db/migrations/003_public_api_lockdown.sql');
+    expect(fs.existsSync(accessPath)).toBe(true);
+    const content = fs.readFileSync(accessPath, 'utf-8');
+    expect(content).toContain('ENABLE ROW LEVEL SECURITY');
+    expect(content).toContain('REVOKE ALL PRIVILEGES ON TABLE public.%I FROM %I');
+    expect(content).toContain("'anon'");
+    expect(content).toContain("'authenticated'");
+    for (const table of ['leads', 'users', 'memberships', 'tenant_settings', 'whatsapp_messages']) {
+      expect(content).toContain(`'${table}'`);
+    }
+  });
+
+  it('protects invitation token storage in migration 005', () => {
+    const migrationPath = path.join(__dirname, '../src/db/migrations/005_workspace_invitations_rls.sql');
+    expect(fs.existsSync(migrationPath)).toBe(true);
+    const content = fs.readFileSync(migrationPath, 'utf-8');
+    expect(content).toContain('workspace_invitations');
+    expect(content).toContain('ENABLE ROW LEVEL SECURITY');
+    expect(content).toContain('authenticated');
+  });
+
+  it('adds persistent authentication/session tables with least-privilege protection in migration 006', () => {
+    const authMigrationPath = path.join(__dirname, '../src/db/migrations/006_auth_sessions_and_password_resets.sql');
+    expect(fs.existsSync(authMigrationPath)).toBe(true);
+    const content = fs.readFileSync(authMigrationPath, 'utf-8');
+    expect(content).toContain('ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 0');
+    expect(content).toContain('ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ');
+    expect(content).toContain('CREATE TABLE IF NOT EXISTS public.revoked_auth_tokens');
+    expect(content).toContain('CREATE TABLE IF NOT EXISTS public.password_reset_tokens');
+    expect(content).toContain('CREATE INDEX IF NOT EXISTS idx_revoked_auth_tokens_expires_at');
+    expect(content).toContain('CONSTRAINT password_reset_expires_after_creation');
+    expect(content).toContain('token_hash CHAR(64) NOT NULL UNIQUE');
+    expect(content).toContain('ENABLE ROW LEVEL SECURITY');
+    expect(content).toContain('REVOKE ALL PRIVILEGES ON TABLE public.password_reset_tokens FROM PUBLIC');
+    expect(content).not.toMatch(/\bDROP\s+(?:TABLE|COLUMN|SCHEMA)\b/i);
+  });
+
+
+  it('removes implicit tenant timezone, currency, and locale defaults in migration 007', () => {
+    const tenantConfigMigration = path.join(__dirname, '../src/db/migrations/007_require_explicit_tenant_preferences.sql');
+    expect(fs.existsSync(tenantConfigMigration)).toBe(true);
+    const content = fs.readFileSync(tenantConfigMigration, 'utf-8');
+    expect(content).toContain('ALTER COLUMN timezone DROP DEFAULT');
+    expect(content).toContain('ALTER COLUMN currency DROP DEFAULT');
+    expect(content).toContain('ALTER COLUMN locale DROP DEFAULT');
+    expect(content).not.toMatch(/\\bDROP\\s+(?:TABLE|COLUMN|SCHEMA)\\b/i);
+    expect(content).not.toMatch(/UPDATE\\s+public\\.tenants/i);
+  });
+
 });

@@ -112,11 +112,10 @@ describe('Phase 5 & 6: Advanced Reporting, Usage Metering & SaaS Billing Tests',
         .set('x-tenant-id', 'tenant_bring_my_bite')
         .send({ planId: 'growth' });
 
-      expect([200, 503]).toContain(res.status);
-      if (res.status === 200) {
-        expect(res.body.success).toBe(true);
-        expect(res.body.data.planId).toBe('growth');
-      }
+      // Paid-plan changes must fail closed until a real billing provider is configured.
+      expect(res.status).toBe(501);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('BILLING_PROVIDER_NOT_CONFIGURED');
     });
 
     it('POST /api/billing/webhook processes subscription events idempotently', async () => {

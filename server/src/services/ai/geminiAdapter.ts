@@ -1,4 +1,5 @@
 import { AiProviderAdapter, GenerateReplyParams, GenerateReplyResult } from './types';
+import { appendProviderPath, resolveHttpsProviderEndpoint } from '../providerEndpoints';
 
 export class GeminiAdapter implements AiProviderAdapter {
   readonly id = 'gemini';
@@ -18,7 +19,9 @@ export class GeminiAdapter implements AiProviderAdapter {
 
     try {
       const targetModel = model || 'gemini-1.5-flash';
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
+      const url = appendProviderPath(resolveHttpsProviderEndpoint('GEMINI_API_BASE_URL', 'generativelanguage.googleapis.com', '/v1beta'), ['models', targetModel]);
+      url.pathname += ':generateContent';
+      url.searchParams.set('key', apiKey);
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -41,7 +44,16 @@ export class GeminiAdapter implements AiProviderAdapter {
     const { incomingMessage, leadName, config } = params;
     const targetModel = config.model || 'gemini-1.5-flash';
 
-    if (config.apiKey && (config.apiKey.startsWith('test_') || config.apiKey.includes('mock'))) {
+    if (!config.apiKey?.trim()) {
+      return {
+        success: false,
+        confidence: 0,
+        model: targetModel,
+        error: 'Gemini API key is required.',
+      };
+    }
+
+    if (config.apiKey.startsWith('test_') || config.apiKey.includes('mock')) {
       return {
         success: true,
         replyText: `Hello ${leadName || 'valued customer'}! Thanks for contacting us. We received your note: "${incomingMessage}". Let us assist you with that today.`,
@@ -60,7 +72,9 @@ Rules: Provide a helpful, professional reply under ${config.maxOutputChars || 30
     `.trim();
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${config.apiKey}`;
+      const url = appendProviderPath(resolveHttpsProviderEndpoint('GEMINI_API_BASE_URL', 'generativelanguage.googleapis.com', '/v1beta'), ['models', targetModel]);
+      url.pathname += ':generateContent';
+      url.searchParams.set('key', config.apiKey);
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
