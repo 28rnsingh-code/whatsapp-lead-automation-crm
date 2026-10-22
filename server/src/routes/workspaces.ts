@@ -6,12 +6,16 @@ import { pool } from '../db';
 
 const router = Router();
 
-function shouldUseDatabaseMemberships(): boolean {
-  return process.env.NODE_ENV === 'production'
-    || (Boolean(process.env.DATABASE_URL) && process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true');
+function shouldUseFixtureWorkspaces(): boolean {
+  // Fixtures are permitted only when tests are explicitly blocked from all database I/O.
+  // Every deployable/non-test runtime must use membership-scoped PostgreSQL results.
+  return process.env.NODE_ENV === 'test' && process.env.VITEST !== 'false'
+    && process.env.DATABASE_URL === undefined
+    && process.env.TEST_DATABASE_URL === undefined
+    && process.env.DATABASE_TEST_URL === undefined;
 }
 
-// Development-only workspace fixtures. Production always reads memberships from PostgreSQL.
+// Development-only workspace fixtures. They are reachable only in isolated, DB-blocked tests.
 const WORKSPACES: Tenant[] = [
   {
     id: 'tenant_bring_my_bite',
@@ -63,7 +67,7 @@ function dbWorkspaceToTenant(row: any): Tenant & { role?: string } {
 
 // List only the authenticated user's workspaces.
 router.get('/', requireAuth, async (req: Request, res: Response): Promise<void> => {
-  if (shouldUseDatabaseMemberships()) {
+  if (!shouldUseFixtureWorkspaces()) {
     try {
       const result = await pool.query(
         `${DB_WORKSPACE_SELECT} ORDER BY t.created_at ASC;`,
@@ -129,7 +133,18 @@ router.get('/current', requireAuth, requireTenant(), async (req: Request, res: R
     return;
   }
 
-  const currentTenant = WORKSPACES.find((w) => w.id === req.tenantContext?.tenantId) || WORKSPACES[0];
+  const currentTenant = WORKSPACES.find((w) => w.id === req.tenantContext?.tenantId);
+  if (!currentTenant) {
+    res.status(404).json({
+      success: false,
+      error: {
+        code: 'WORKSPACE_NOT_FOUND',
+        message: 'The active workspace was not found.',
+        requestId: req.requestId || 'req_unknown',
+      },
+    });
+    return;
+  }
   res.json({ success: true, data: currentTenant, meta: { requestId: req.requestId } });
 });
 
