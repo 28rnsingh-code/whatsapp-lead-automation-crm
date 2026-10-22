@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/app';
 import { signToken } from '../src/services/authService';
+import { resolveDatabaseConfig } from '../src/db';
 
 describe('OneClick Automics CRM API Contracts & Envelope', () => {
   const validToken = signToken({
@@ -33,10 +34,22 @@ describe('OneClick Automics CRM API Contracts & Envelope', () => {
       .set('Authorization', `Bearer ${validToken}`)
       .set('x-tenant-id', 'tenant_bring_my_bite');
 
-    expect(res.status).toBe(503);
-    expect(res.body.success).toBe(false);
-    expect(res.body.error.code).toBe('DATABASE_SAFETY_BLOCKED');
-    expect(res.body.meta ?? {}).not.toHaveProperty('totalCount');
+    if (resolveDatabaseConfig().isBlocked) {
+      expect(res.status).toBe(503);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('DATABASE_SAFETY_BLOCKED');
+      expect(res.body.meta ?? {}).not.toHaveProperty('totalCount');
+      return;
+    }
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.meta).toHaveProperty('totalCount');
+    expect(res.body.meta.page).toBe(1);
+    for (const lead of res.body.data) {
+      expect(lead.tenantId).toBe('tenant_bring_my_bite');
+    }
   });
 
   it('GET /api/leads with forbidden tenant ID should return 403 Forbidden', async () => {
