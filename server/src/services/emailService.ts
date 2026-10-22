@@ -38,7 +38,7 @@ export async function sendPasswordResetEmail(
   }
 
   const safeName = displayName.replace(/[<>"'&]/g, '').slice(0, 120) || 'there';
-  const controller = signal ? undefined : AbortSignal.timeout(10000);
+  const timeoutSignal = signal ? undefined : AbortSignal.timeout(10000);
   const response = await fetch(RESEND_API_URL, {
     method: 'POST',
     headers: {
@@ -52,7 +52,7 @@ export async function sendPasswordResetEmail(
       text: `Hello ${safeName},\n\nUse this one-time link to reset your password. It expires shortly:\n${destination.toString()}\n\nIf you did not request this, you can ignore this email.`,
       html: `<p>Hello ${safeName},</p><p>Use this one-time link to reset your password. It expires shortly:</p><p><a href="${destination.toString()}">Reset password</a></p><p>If you did not request this, you can ignore this email.</p>`,
     }),
-    signal: signal || controller?.signal,
+    signal: signal || timeoutSignal,
   });
 
   if (!response.ok) {
