@@ -1,238 +1,179 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { loginRateLimiter } from '../middleware/rateLimiter';
-import { hashPassword, verifyPassword, signToken } from '../services/authService';
-import { SessionContext } from '../types';
+import { verifyPassword, signToken } from '../services/authService';
+import { pool } from '../db';
+import { SessionContext, RoleName } from '../types';
 
 const router = Router();
 
-// Internal user record with bcrypt password hash
-interface UserAccount {
-  id: string;
-  email: string;
-  displayName: string;
-  passwordHash: string;
-  status: 'active' | 'suspended';
-  defaultTenantId: string;
+interface AuthRow {
+  user_id: string;
+  email_normalized: string;
+  display_name: string;
+  password_hash: string | null;
+  user_status: string;
+  user_created_at: Date | string;
+  tenant_id: string;
+  tenant_name: string;
+  tenant_slug: string;
+  tenant_status: string;
+  timezone: string;
+  currency: string;
+  locale: string;
+  tenant_created_at: Date | string;
+  tenant_updated_at: Date | string;
+  role_name: string;
+  membership_status: string;
 }
 
-// In-memory user store with real bcrypt password hashes
-// Default credentials for dev/test:
-// Email: rohan@bringmybite.in | Password: Password123!
-let INITIALIZED_USERS: UserAccount[] = [];
+async function loadAccount(email: string): Promise<AuthRow | null> {
+  const result = await pool.query<AuthRow>(
+    `SELECT u.id AS user_id, u.email_normalized, u.display_name,
+            u.password_hash, u.status AS user_status, u.created_at AS user_created_at,
+            t.id AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug,
+            t.status AS tenant_status, t.timezone, t.currency, t.locale,
+            t.created_at AS tenant_created_at, t.updated_at AS tenant_updated_at,
+            r.name AS role_name, m.status AS membership_status
+     FROM users u
+     JOIN memberships m ON m.user_id = u.id
+     JOIN tenants t ON t.id = m.tenant_id
+     JOIN roles r ON r.id = m.role_id
+     WHERE u.email_normalized = $1
+     ORDER BY CASE WHEN r.name = 'Admin' THEN 0 ELSE 1 END, t.created_at ASC
+     LIMIT 1`,
+    [email.trim().toLowerCase()]
+  );
+  return result.rows[0] ?? null;
+}
 
-async function getInitializedUsers(): Promise<UserAccount[]> {
-  if (INITIALIZED_USERS.length === 0) {
-    const rohanHash = await hashPassword('Password123!');
-    const riyaHash = await hashPassword('ManagerPass123!');
-    INITIALIZED_USERS = [
-      {
-        id: 'user_rohan_singh',
-        email: 'rohan@bringmybite.in',
-        displayName: 'Rohan Singh',
-        passwordHash: rohanHash,
-        status: 'active',
-        defaultTenantId: 'tenant_bring_my_bite',
-      },
-      {
-        id: 'user_riya_singh',
-        email: 'riya@bringmybite.in',
-        displayName: 'Riya Singh',
-        passwordHash: riyaHash,
-        status: 'active',
-        defaultTenantId: 'tenant_bring_my_bite',
-      },
-      {
-        id: 'user_suspended_member',
-        email: 'suspended@bringmybite.in',
-        displayName: 'Suspended Member',
-        passwordHash: await hashPassword('SuspendedPass123!'),
-        status: 'suspended',
-        defaultTenantId: 'tenant_bring_my_bite',
-      },
-    ];
+async function buildSession(account: AuthRow): Promise<SessionContext> {
+  const permissionResult = await pool.query<{ permission_key: string }>(
+    `SELECT rp.permission_key
+     FROM role_permissions rp
+     JOIN roles r ON r.id = rp.role_id
+     WHERE r.tenant_id = $1 AND r.name = $2
+     ORDER BY rp.permission_key`,
+    [account.tenant_id, account.role_name]
+  );
+  const permissions = permissionResult.rows.map(row => row.permission_key);
+  // Admins retain usable permissions even when a workspace has not seeded granular RBAC rows yet.
+  if (permissions.length === 0 && account.role_name === 'Admin') {
+    permissions.push('leads:read', 'leads:write', 'leads:delete', 'pipeline:manage', 'reports:view', 'team:manage');
   }
-  return INITIALIZED_USERS;
+
+  return {
+    user: {
+      id: account.user_id,
+      email: account.email_normalized,
+      displayName: account.display_name,
+      status: account.user_status as 'active' | 'invited' | 'suspended',
+      createdAt: new Date(account.user_created_at).toISOString(),
+    },
+    tenant: {
+      id: account.tenant_id,
+      name: account.tenant_name,
+      slug: account.tenant_slug,
+      status: account.tenant_status as 'active' | 'suspended' | 'trial',
+      timezone: account.timezone,
+      currency: account.currency,
+      locale: account.locale,
+      createdAt: new Date(account.tenant_created_at).toISOString(),
+      updatedAt: new Date(account.tenant_updated_at).toISOString(),
+    },
+    role: account.role_name as RoleName,
+    permissions,
+  };
 }
 
-// 1. Login with Rate Limiting and Cryptographic JWT Signing
+function sendError(res: Response, status: number, code: string, message: string, requestId: string): void {
+  res.status(status).json({ success: false, error: { code, message, requestId } });
+}
+
+// Login validates against persistent PostgreSQL accounts; no demo users or passwords.
 router.post('/login', loginRateLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { email, password } = req.body;
   const requestId = req.requestId || 'req_unknown';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
 
   if (!email || !password) {
-    res.status(400).json({
-      success: false,
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Email and password are required.',
-        details: {
-          email: !email ? ['Email is required.'] : [],
-          password: !password ? ['Password is required.'] : [],
-        },
-        requestId,
-      },
-    });
+    sendError(res, 400, 'VALIDATION_ERROR', 'Email and password are required.', requestId);
     return;
   }
 
-  const users = await getInitializedUsers();
-  const normalizedEmail = email.trim().toLowerCase();
-  const user = users.find((u) => u.email.toLowerCase() === normalizedEmail);
+  try {
+    const account = await loadAccount(email);
+    if (!account || account.user_status !== 'active' || account.membership_status !== 'active' ||
+        account.tenant_status !== 'active' || !account.password_hash ||
+        !(await verifyPassword(password, account.password_hash))) {
+      sendError(res, 401, 'INVALID_CREDENTIALS', 'Invalid email or password combination.', requestId);
+      return;
+    }
 
-  if (!user || user.status !== 'active') {
-    res.status(401).json({
-      success: false,
-      error: {
-        code: 'INVALID_CREDENTIALS',
-        message: 'Invalid email or password combination.',
-        requestId,
-      },
+    const session = await buildSession(account);
+    const token = signToken({
+      userId: account.user_id,
+      email: account.email_normalized,
+      defaultTenantId: account.tenant_id,
     });
-    return;
-  }
 
-  // Cryptographic constant-time bcrypt verification
-  const isMatch = await verifyPassword(password, user.passwordHash);
-  if (!isMatch) {
-    res.status(401).json({
-      success: false,
-      error: {
-        code: 'INVALID_CREDENTIALS',
-        message: 'Invalid email or password combination.',
-        requestId,
-      },
+    res.json({
+      success: true,
+      data: { token, session },
+      meta: { requestId, serverTimestamp: new Date().toISOString() },
     });
-    return;
+  } catch (error) {
+    console.error('[Auth] Database login failed', { requestId, error });
+    sendError(res, 503, 'AUTH_SERVICE_UNAVAILABLE', 'Sign-in is temporarily unavailable. Please try again shortly.', requestId);
   }
-
-  // Cryptographically sign JWT with user identity and 24h expiration
-  const token = signToken({
-    userId: user.id,
-    email: user.email,
-    defaultTenantId: user.defaultTenantId,
-  });
-
-  const session: SessionContext = {
-    user: {
-      id: user.id,
-      email: user.email,
-      displayName: user.displayName,
-      status: user.status,
-      createdAt: '2026-01-15T09:00:00Z',
-    },
-    tenant: {
-      id: 'tenant_bring_my_bite',
-      name: 'Bring My Bite',
-      slug: 'bring-my-bite',
-      status: 'active',
-      timezone: 'Asia/Kolkata',
-      currency: 'INR',
-      locale: 'en-IN',
-      createdAt: '2026-01-15T09:00:00Z',
-      updatedAt: '2026-01-15T09:00:00Z',
-    },
-    role: user.id === 'user_rohan_singh' ? 'Admin' : 'Sales Manager',
-    permissions: ['leads:read', 'leads:write', 'pipeline:manage', 'reports:view'],
-  };
-
-  res.json({
-    success: true,
-    data: {
-      token,
-      session,
-    },
-    meta: {
-      requestId,
-      serverTimestamp: new Date().toISOString(),
-    },
-  });
 });
 
-// 2. Verified Session Retrieval (Protected)
+// Rebuild the session from the database so suspended users/memberships are not kept alive by an old token.
 router.get('/session', requireAuth, async (req: Request, res: Response): Promise<void> => {
-  const users = await getInitializedUsers();
-  const user = users.find((u) => u.id === req.userId);
-
-  if (!user) {
-    res.status(401).json({
-      success: false,
-      error: {
-        code: 'USER_NOT_FOUND',
-        message: 'Authenticated user session was not found.',
-        requestId: req.requestId || 'req_unknown',
-      },
-    });
-    return;
+  const requestId = req.requestId || 'req_unknown';
+  try {
+    const result = await pool.query<AuthRow>(
+      `SELECT u.id AS user_id, u.email_normalized, u.display_name,
+              u.password_hash, u.status AS user_status, u.created_at AS user_created_at,
+              t.id AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug,
+              t.status AS tenant_status, t.timezone, t.currency, t.locale,
+              t.created_at AS tenant_created_at, t.updated_at AS tenant_updated_at,
+              r.name AS role_name, m.status AS membership_status
+       FROM users u
+       JOIN memberships m ON m.user_id = u.id
+       JOIN tenants t ON t.id = m.tenant_id
+       JOIN roles r ON r.id = m.role_id
+       WHERE u.id = $1 AND u.status = 'active' AND m.status = 'active' AND t.status = 'active'
+       ORDER BY CASE WHEN r.name = 'Admin' THEN 0 ELSE 1 END, t.created_at ASC
+       LIMIT 1`,
+      [req.userId]
+    );
+    if (!result.rows[0]) {
+      sendError(res, 401, 'USER_NOT_FOUND', 'Active account membership was not found.', requestId);
+      return;
+    }
+    res.json({ success: true, data: await buildSession(result.rows[0]), meta: { requestId } });
+  } catch (error) {
+    console.error('[Auth] Session lookup failed', { requestId, error });
+    sendError(res, 503, 'AUTH_SERVICE_UNAVAILABLE', 'Session lookup is temporarily unavailable.', requestId);
   }
-
-  const session: SessionContext = {
-    user: {
-      id: user.id,
-      email: user.email,
-      displayName: user.displayName,
-      status: user.status,
-      createdAt: '2026-01-15T09:00:00Z',
-    },
-    tenant: {
-      id: 'tenant_bring_my_bite',
-      name: 'Bring My Bite',
-      slug: 'bring-my-bite',
-      status: 'active',
-      timezone: 'Asia/Kolkata',
-      currency: 'INR',
-      locale: 'en-IN',
-      createdAt: '2026-01-15T09:00:00Z',
-      updatedAt: '2026-01-15T09:00:00Z',
-    },
-    role: user.id === 'user_rohan_singh' ? 'Admin' : 'Sales Manager',
-    permissions: ['leads:read', 'leads:write', 'pipeline:manage', 'reports:view'],
-  };
-
-  res.json({
-    success: true,
-    data: session,
-    meta: {
-      requestId: req.requestId,
-    },
-  });
 });
 
-// 3. Logout
 router.post('/logout', requireAuth, (req: Request, res: Response) => {
-  res.json({
-    success: true,
-    data: { message: 'Successfully signed out.' },
-    meta: {
-      requestId: req.requestId,
-    },
-  });
+  res.json({ success: true, data: { message: 'Successfully signed out.' }, meta: { requestId: req.requestId } });
 });
 
-// 4. Forgot Password (Safe Enumeration-Free Response)
+// Enumeration-safe response. Actual email delivery requires an email provider integration.
 router.post('/forgot-password', (req: Request, res: Response): void => {
-  const { email } = req.body;
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
   if (!email) {
-    res.status(400).json({
-      success: false,
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Email address is required.',
-        requestId: req.requestId || 'req_unknown',
-      },
-    });
+    sendError(res, 400, 'VALIDATION_ERROR', 'Email address is required.', req.requestId || 'req_unknown');
     return;
   }
-
-  // Security invariant: never leak user account existence
   res.json({
     success: true,
-    data: {
-      message: 'If an account exists for this email, password recovery instructions have been dispatched.',
-    },
-    meta: {
-      requestId: req.requestId,
-    },
+    data: { message: 'If an account exists for this email, password recovery instructions can be requested.' },
+    meta: { requestId: req.requestId },
   });
 });
 

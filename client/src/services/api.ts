@@ -5,7 +5,17 @@ const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(
 const API_BASE = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
   ? `${configuredApiBase}/api`
   : configuredApiBase;
-const DEFAULT_TENANT_ID = 'tenant_bring_my_bite';
+function getTenantIdFromToken(token: string): string | null {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = JSON.parse(atob(normalized));
+    return typeof decoded.defaultTenantId === 'string' ? decoded.defaultTenantId : null;
+  } catch {
+    return null;
+  }
+}
 
 let inFlightAuth: Promise<string> | null = null;
 
@@ -19,39 +29,7 @@ export async function getAuthToken(): Promise<string> {
     return existingToken;
   }
 
-  // Remove unintended demo auto-login from production builds
-  const isProd = Boolean((import.meta as { env?: { PROD?: boolean } }).env?.PROD);
-  if (isProd) {
-    throw new Error('Authentication required. Please log in to your workspace account.');
-  }
-
-  if (inFlightAuth) {
-    return inFlightAuth;
-  }
-
-  inFlightAuth = (async () => {
-    try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: 'rohan@bringmybite.in',
-          password: 'Password123!',
-        }),
-      });
-
-      const data = await res.json();
-      if (data.success && data.data?.token) {
-        localStorage.setItem('auth_token', data.data.token);
-        return data.data.token;
-      }
-      throw new Error(data.error?.message || 'Authentication failed');
-    } finally {
-      inFlightAuth = null;
-    }
-  })();
-
-  return inFlightAuth;
+  throw new Error('Authentication required. Please log in to your workspace account.');
 }
 
 /**
@@ -65,7 +43,8 @@ async function apiRequest<T>(
   const token = await getAuthToken();
   const headers = new Headers(options.headers || {});
   headers.set('Authorization', `Bearer ${token}`);
-  headers.set('x-tenant-id', DEFAULT_TENANT_ID);
+  const tenantId = getTenantIdFromToken(token);
+  if (tenantId) headers.set('x-tenant-id', tenantId);
   if (!headers.has('Content-Type') && options.body && typeof options.body === 'string') {
     headers.set('Content-Type', 'application/json');
   }
@@ -254,7 +233,7 @@ export async function downloadLeadsExportApi(params: {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
-      'x-tenant-id': DEFAULT_TENANT_ID,
+      ...(getTenantIdFromToken(token) ? { 'x-tenant-id': getTenantIdFromToken(token)! } : {}),
     },
   });
 
@@ -578,7 +557,7 @@ export async function downloadReportsCsvApi(range: string = '30d'): Promise<Blob
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
-      'x-tenant-id': DEFAULT_TENANT_ID,
+      'x-tenant-id': getTenantIdFromToken(token) || '',
     },
   });
 
