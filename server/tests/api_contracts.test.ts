@@ -60,6 +60,7 @@ describe('OneClick Automics CRM API Contracts & Envelope', () => {
     const res = await request(app)
       .post('/api/leads')
       .set('Authorization', `Bearer ${validToken}`)
+      .set('x-tenant-id', 'tenant_bring_my_bite')
       .send({});
 
     expect(res.status).toBe(400);
