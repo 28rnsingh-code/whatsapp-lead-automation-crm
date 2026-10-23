@@ -164,6 +164,37 @@ export async function reserveMonthlyUsage(
   }
 }
 
+/**
+ * Replace a reserved estimate with the actual provider-reported usage after the
+ * external call has completed. This is ledger reconciliation, not a new quota
+ * authorization: overages are recorded accurately so the next request is blocked.
+ */
+export async function reconcileMonthlyUsage(reservation: MonthlyUsageReservation, actualAmount: number): Promise<void> {
+  if (!Number.isInteger(actualAmount) || actualAmount < 0) {
+    throw new Error('Actual usage must be a non-negative integer.');
+  }
+  const config = METRICS[reservation.metric];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const tenant = await client.query('SELECT id FROM tenants WHERE id = $1 FOR UPDATE', [reservation.tenantId]);
+    if (tenant.rowCount !== 1) throw new Error('WORKSPACE_NOT_FOUND');
+    const updated = await client.query(
+      `UPDATE tenant_usage
+       SET ${config.column} = GREATEST(0, ${config.column} - $3 + $4), updated_at = NOW()
+       WHERE tenant_id = $1 AND period_key = $2`,
+      [reservation.tenantId, reservation.periodKey, reservation.amount, actualAmount],
+    );
+    if (updated.rowCount !== 1) throw new Error('USAGE_RESERVATION_NOT_FOUND');
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /** Reverse a reservation when an operation definitively failed before consuming the resource. */
 export async function releaseMonthlyUsage(reservation: MonthlyUsageReservation, amount = reservation.amount): Promise<void> {
   const config = METRICS[reservation.metric];
