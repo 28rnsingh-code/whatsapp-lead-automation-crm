@@ -3,7 +3,8 @@ import { requireAuth } from '../middleware/auth';
 import { requireTenant } from '../middleware/tenant';
 import { pool, resolveDatabaseConfig } from '../db';
 import { DEFAULT_TENANT_ID } from '../db/seed';
-import { PLAN_DEFINITIONS, PlanTier } from '../services/billing/types';
+import { PLAN_DEFINITIONS, PlanTier, PlanLimits } from '../services/billing/types';
+import { getCurrentUsagePeriodKey } from '../services/billing/usageMetering';
 
 const router = Router();
 
@@ -155,15 +156,12 @@ router.get('/analytics', requireAuth, requireTenant(), async (req: Request, res:
   }
 });
 
-// 2. GET /api/reports/usage - Real tenant usage counters vs plan limits
+// 2. GET /api/reports/usage - Live tracked usage counters against persisted plan limits
 router.get('/usage', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
-  const rawTenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
-  const now = new Date();
-  const periodKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const periodKey = getCurrentUsagePeriodKey();
   const dbConfig = resolveDatabaseConfig();
-
   const defaultPlan = PLAN_DEFINITIONS.starter;
 
   if (dbConfig.isBlocked) {
@@ -173,86 +171,85 @@ router.get('/usage', requireAuth, requireTenant(), async (req: Request, res: Res
         periodKey,
         plan: defaultPlan,
         usage: {
-          leadsCount: 12,
-          maxLeads: defaultPlan.limits.maxLeads,
-          leadsPct: Math.round((12 / defaultPlan.limits.maxLeads) * 100),
-          messagesCount: 45,
-          maxMessages: defaultPlan.limits.maxMessagesPerMonth,
-          messagesPct: Math.round((45 / defaultPlan.limits.maxMessagesPerMonth) * 100),
-          importRowsCount: 150,
-          maxImports: defaultPlan.limits.maxImportsPerMonth,
-          aiTokensCount: 2400,
-          maxAiTokens: defaultPlan.limits.maxAiTokens,
+          leadsCount: 12, maxLeads: defaultPlan.limits.maxLeads, leadsPct: Math.round((12 / defaultPlan.limits.maxLeads) * 100),
+          messagesCount: 45, maxMessages: defaultPlan.limits.maxMessagesPerMonth, messagesPct: Math.round((45 / defaultPlan.limits.maxMessagesPerMonth) * 100),
+          importsCount: 2, importRowsCount: 150, maxImports: defaultPlan.limits.maxImportsPerMonth, importsPct: 20,
+          aiRequestsCount: 10, aiTokensCount: 2400, maxAiTokens: defaultPlan.limits.maxAiTokens, aiTokensPct: Math.round((2400 / defaultPlan.limits.maxAiTokens) * 100),
+          membersCount: 1, maxMembers: defaultPlan.limits.maxMembers,
         },
       },
-      meta: { requestId },
+      meta: { requestId, source: 'test-fallback' },
     });
     return;
   }
 
   try {
-    // 1. Fetch Subscription
-    const subRes = await pool.query(
-      `SELECT plan_id, status, limits FROM tenant_subscriptions WHERE tenant_id = $1 LIMIT 1;`,
-      [tenantId]
-    );
+    const [subRes, leadsCountRes, usageRes, membersCountRes] = await Promise.all([
+      pool.query('SELECT plan_id, status, limits FROM tenant_subscriptions WHERE tenant_id = $1 LIMIT 1', [tenantId]),
+      pool.query('SELECT COUNT(*)::int AS count FROM leads WHERE tenant_id = $1 AND archived_at IS NULL', [tenantId]),
+      pool.query(
+        `SELECT messages_count AS \"messagesCount\", imports_count AS \"importsCount\",
+                import_rows_count AS \"importRowsCount\", ai_requests_count AS \"aiRequestsCount\",
+                ai_tokens_count AS \"aiTokensCount\"
+         FROM tenant_usage WHERE tenant_id = $1 AND period_key = $2 LIMIT 1`,
+        [tenantId, periodKey],
+      ),
+      pool.query(
+        `SELECT COUNT(*)::int AS count FROM memberships m
+         JOIN users u ON u.id = m.user_id
+         WHERE m.tenant_id = $1 AND m.status = 'active' AND u.status = 'active'`,
+        [tenantId],
+      ),
+    ]);
 
-    const planTier: PlanTier = (subRes.rows[0]?.plan_id as PlanTier) || 'starter';
-    const plan = PLAN_DEFINITIONS[planTier] || defaultPlan;
-
-    // 2. Query actual counts
-    const leadsCountRes = await pool.query(
-      `SELECT COUNT(*) as count FROM leads WHERE tenant_id = $1;`,
-      [tenantId]
-    );
-    const leadsCount = parseInt(leadsCountRes.rows[0].count, 10) || 0;
-
-    const msgsCountRes = await pool.query(
-      `SELECT COUNT(*) as count FROM whatsapp_messages WHERE tenant_id = $1 AND created_at >= DATE_TRUNC('month', NOW());`,
-      [tenantId]
-    ).catch(() => ({ rows: [{ count: 0 }] }));
-    const messagesCount = parseInt(msgsCountRes.rows[0].count, 10) || 0;
+    const row = subRes.rows[0];
+    const suppliedPlanId = row?.plan_id;
+    const planTier: PlanTier = suppliedPlanId && suppliedPlanId in PLAN_DEFINITIONS ? suppliedPlanId as PlanTier : 'starter';
+    const basePlan = PLAN_DEFINITIONS[planTier] || defaultPlan;
+    const parsedLimits = typeof row?.limits === 'string' ? JSON.parse(row.limits) : (row?.limits || {});
+    const getLimit = (key: keyof PlanLimits): number => {
+      const value = Number(parsedLimits[key]);
+      return Number.isInteger(value) && value >= 0 ? value : basePlan.limits[key];
+    };
+    const limits: PlanLimits = {
+      maxMembers: getLimit('maxMembers'),
+      maxLeads: getLimit('maxLeads'),
+      maxImportsPerMonth: getLimit('maxImportsPerMonth'),
+      maxMessagesPerMonth: getLimit('maxMessagesPerMonth'),
+      maxAiTokens: getLimit('maxAiTokens'),
+    };
+    const plan = { ...basePlan, limits };
+    const usage = usageRes.rows[0] || {};
+    const leadsCount = Number(leadsCountRes.rows[0]?.count || 0);
+    const messagesCount = Number(usage.messagesCount || 0);
+    const importsCount = Number(usage.importsCount || 0);
+    const importRowsCount = Number(usage.importRowsCount || 0);
+    const aiRequestsCount = Number(usage.aiRequestsCount || 0);
+    const aiTokensCount = Number(usage.aiTokensCount || 0);
+    const membersCount = Number(membersCountRes.rows[0]?.count || 0);
+    const pct = (used: number, max: number) => max > 0 ? Math.min(Math.round((used / max) * 100), 100) : (used > 0 ? 100 : 0);
 
     res.json({
       success: true,
       data: {
         periodKey,
         plan,
+        subscriptionStatus: row?.status || 'trial',
         usage: {
-          leadsCount,
-          maxLeads: plan.limits.maxLeads,
-          leadsPct: Math.min(Math.round((leadsCount / plan.limits.maxLeads) * 100), 100),
-          messagesCount,
-          maxMessages: plan.limits.maxMessagesPerMonth,
-          messagesPct: Math.min(Math.round((messagesCount / plan.limits.maxMessagesPerMonth) * 100), 100),
-          importRowsCount: 0,
-          maxImports: plan.limits.maxImportsPerMonth,
-          aiTokensCount: 1500,
-          maxAiTokens: plan.limits.maxAiTokens,
+          leadsCount, maxLeads: limits.maxLeads, leadsPct: pct(leadsCount, limits.maxLeads),
+          messagesCount, maxMessages: limits.maxMessagesPerMonth, messagesPct: pct(messagesCount, limits.maxMessagesPerMonth),
+          importsCount, importRowsCount, maxImports: limits.maxImportsPerMonth, importsPct: pct(importsCount, limits.maxImportsPerMonth),
+          aiRequestsCount, aiTokensCount, maxAiTokens: limits.maxAiTokens, aiTokensPct: pct(aiTokensCount, limits.maxAiTokens),
+          membersCount, maxMembers: limits.maxMembers,
         },
       },
-      meta: { requestId },
+      meta: { requestId, source: 'tenant_usage' },
     });
-  } catch (error: any) {
-    res.json({
-      success: true,
-      data: {
-        periodKey,
-        plan: defaultPlan,
-        usage: {
-          leadsCount: 0,
-          maxLeads: defaultPlan.limits.maxLeads,
-          leadsPct: 0,
-          messagesCount: 0,
-          maxMessages: defaultPlan.limits.maxMessagesPerMonth,
-          messagesPct: 0,
-          importRowsCount: 0,
-          maxImports: defaultPlan.limits.maxImportsPerMonth,
-          aiTokensCount: 0,
-          maxAiTokens: defaultPlan.limits.maxAiTokens,
-        },
-      },
-      meta: { requestId },
+  } catch (error) {
+    console.error('[Usage Report] Current usage could not be read', { requestId, error });
+    res.status(503).json({
+      success: false,
+      error: { code: 'USAGE_READ_FAILED', message: 'Current plan usage could not be read from persistent storage.', requestId },
     });
   }
 });
