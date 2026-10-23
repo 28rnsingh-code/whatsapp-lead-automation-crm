@@ -10,6 +10,7 @@ import {
   getWhatsAppAdapter,
   getAllSupportedWhatsAppProviders,
   maskCredentials,
+  hasSecureEncryptionKey,
   encryptSecret,
   decryptSecret,
 } from '../services/whatsapp/adapterRegistry';
@@ -86,6 +87,14 @@ async function loadTenantWhatsAppConfig(tenantId: string): Promise<any | null> {
   const config = { ...stored };
   for (const key of ['accessToken', 'appSecret', 'webhookVerifyToken', 'apiKey', 'authToken']) {
     if (typeof config[key] === 'string' && config[key]) config[key] = decryptSecret(config[key]);
+  }
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    config.status = 'error';
+    config.errorMessage = 'ENCRYPTION_KEY is missing or unsafe. No outbound messages can be sent until a secure persistent encryption key is configured.';
+  } else if (config.provider === 'cloud_api' &&
+    (!config.phoneNumberId || !config.businessAccountId || !config.accessToken || !config.appSecret || !config.webhookVerifyToken)) {
+    config.status = 'error';
+    config.errorMessage = 'WhatsApp credentials are incomplete. Re-save the Meta Phone Number ID, WABA ID, access token, App Secret, and webhook verify token.';
   }
   return config;
 }
@@ -229,6 +238,11 @@ router.post('/config', requireAuth, requireTenant(['Admin', 'Sales Manager']), a
     return;
   }
 
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    sendWhatsAppUnavailable(res, requestId, 'ENCRYPTION_KEY_MISSING', 'A unique persistent ENCRYPTION_KEY of at least 32 characters must be configured before provider secrets can be saved.');
+    return;
+  }
+
   let existing: any = null;
   try {
     existing = await loadTenantWhatsAppConfig(tenantId);
@@ -268,6 +282,15 @@ router.post('/config', requireAuth, requireTenant(['Admin', 'Sales Manager']), a
     apiKey: keepOrReplace(body.apiKey, existing?.apiKey),
     sourceNumber: keepOrReplace(body.sourceNumber, existing?.sourceNumber),
   };
+
+  if (provider === 'cloud_api' &&
+      (!credentials.phoneNumberId || !credentials.businessAccountId || !credentials.accessToken || !credentials.appSecret || !credentials.webhookVerifyToken)) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'WHATSAPP_CONFIG_INCOMPLETE', message: 'Meta configuration requires Phone Number ID, WABA Business Account ID, access token, App Secret, and webhook verify token.', requestId },
+    });
+    return;
+  }
 
   const validation = await adapter.validateCredentials(credentials);
   if (!validation.valid) {
@@ -687,6 +710,11 @@ router.post('/messages', requireAuth, requireTenant(['Admin', 'Sales Manager', '
       : 'DATABASE_ERROR';
     console.error('[WhatsApp Messages] Idempotency lookup failed', { requestId, errorCode });
     sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_STORAGE_UNAVAILABLE', 'Message history could not be checked safely. No message was sent.');
+    return;
+  }
+
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    sendWhatsAppUnavailable(res, requestId, 'ENCRYPTION_KEY_MISSING', 'Outbound messages are disabled until a secure persistent ENCRYPTION_KEY is configured and provider credentials are re-verified.');
     return;
   }
 
