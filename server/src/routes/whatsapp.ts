@@ -18,6 +18,10 @@ import { WhatsAppCredentials, WhatsAppTemplate } from '../services/whatsapp/type
 
 const router = Router();
 
+function isProductionRuntime(): boolean {
+  return process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
+}
+
 function isTestRuntime(): boolean {
   return process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
 }
