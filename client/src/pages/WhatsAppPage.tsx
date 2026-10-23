@@ -278,12 +278,14 @@ export const WhatsAppPage: React.FC = () => {
     }
 
     setSending(true);
+    const requestKey = aiReplyIdempotencyKey || createIdempotencyKey();
+    if (!aiReplyIdempotencyKey) setAiReplyIdempotencyKey(requestKey);
     try {
       const sentMsg = await sendWhatsAppMessageApi({
         recipientPhone: selectedLead.phoneRaw,
         body: aiSuggestion.replyText,
         leadId: selectedLead.id,
-        idempotencyKey: aiReplyIdempotencyKey || createIdempotencyKey(),
+        idempotencyKey: requestKey,
       });
       setMessages((prev) => [...prev.filter((message) => message.id !== sentMsg.id), sentMsg]);
       setAiSuggestion(null);
