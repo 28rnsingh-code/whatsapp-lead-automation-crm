@@ -1,6 +1,10 @@
 import { Lead, ApiResponse, ApiError } from '../types';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+// Accept either the backend origin or an API base URL; server routes are mounted under /api.
+const API_BASE = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
+  ? `${configuredApiBase}/api`
+  : configuredApiBase;
 const DEFAULT_TENANT_ID = 'tenant_bring_my_bite';
 
 let inFlightAuth: Promise<string> | null = null;
