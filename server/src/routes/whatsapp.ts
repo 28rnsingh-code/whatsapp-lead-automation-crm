@@ -456,8 +456,8 @@ router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
       if (event.statusUpdate) {
         const statusResult = await pool.query(
           `UPDATE whatsapp_messages
-           SET status = $1,
-               error_message = CASE WHEN $1 = 'failed' THEN 'Meta reported message delivery failure.' ELSE NULL END
+           SET status = $1::varchar(50),
+               error_message = CASE WHEN $1::varchar(50) = 'failed' THEN 'Meta reported message delivery failure.' ELSE NULL END
            WHERE tenant_id = $2
              AND provider_message_id = $3
              AND direction = 'outbound'
