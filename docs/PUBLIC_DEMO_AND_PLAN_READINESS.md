@@ -25,15 +25,15 @@ The public demo account is created/updated by `server/src/db/seed.ts`. The DB mi
 
 ## Current monthly tiers in code
 
-These are the values currently defined in `server/src/services/billing/types.ts`; they are not a payment checkout confirmation.
+These are the values currently defined in `server/src/services/billing/types.ts`; seat caps are also enforced by the tenant-scoped team API. They are not a payment checkout confirmation.
 
 | Plan | Current price/month | Current lead limit | Current WhatsApp message quota | Current imports/month |
 |---|---:|---:|---:|---:|
-| Starter | ₹2,999 | 1,000 | 500 | 10 |
-| Growth | ₹7,999 | 10,000 | 5,000 | 100 |
-| Enterprise | ₹19,999 | 100,000 | 50,000 | 1,000 |
+| Starter | ₹2,999 | 2 | 1,000 | 500 | 10 |
+| Growth | ₹7,999 | 5 | 10,000 | 5,000 | 100 |
+| Enterprise | ₹19,999 | 10 | 100,000 | 50,000 | 1,000 |
 
-Current subscription controls update CRM entitlements in sandbox/mock mode only. They do not collect payment. Live checkout, verified payment webhooks, invoice/tax handling, renewal/cancellation and delinquency suspension must be configured and tested before selling subscriptions. Seat limits also need to be specified and enforced when the real team invitation/member-management endpoints are implemented.
+Current subscription controls update CRM entitlements in sandbox/mock mode only. They do not collect payment. Live checkout, verified payment webhooks, invoice/tax handling, renewal/cancellation and delinquency suspension must be configured and tested before selling subscriptions. An email allowance/rate is not part of the current plan schema. Do not advertise a free customer email allowance: demo sends are simulated, and real email sends should remain disabled until the business defines included volume/overage charging and configures a verified provider. The free tiers from email providers are development/operational constraints, not a customer-facing product plan.
 
 ## Email
 
