@@ -11,6 +11,20 @@ import {
 
 const ROLE_OPTIONS: TeamMemberRecord['role'][] = ['Admin', 'Sales Manager', 'Sales Executive', 'Read-only'];
 
+function currentUserId(): string | null {
+  try {
+    const token = localStorage.getItem('auth_token') || '';
+    const encodedPayload = token.split('.')[1];
+    if (!encodedPayload) return null;
+    const base64 = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+    const payload = JSON.parse(atob(padded));
+    return typeof payload.userId === 'string' ? payload.userId : null;
+  } catch {
+    return null;
+  }
+}
+
 function formatDate(value?: string): string {
   if (!value) return '—';
   const date = new Date(value);
@@ -110,6 +124,7 @@ export const TeamPage: React.FC = () => {
   };
 
   const activeCount = team.members.filter(member => member.membershipStatus === 'active' && member.accountStatus === 'active').length;
+  const signedInUserId = currentUserId();
 
   return (
     <div style={{ display: 'grid', gap: '18px' }}>
@@ -178,7 +193,7 @@ export const TeamPage: React.FC = () => {
                       <span style={{ display: 'block', color: 'var(--text-muted)', fontSize: '11px' }}>Added {formatDate(member.invitedAt)}</span>
                     </td>
                     <td style={{ padding: '12px' }}>
-                      <select className="select-control" value={roleValue} onChange={event => setPendingRoles(previous => ({ ...previous, [member.userId]: event.target.value as TeamMemberRecord['role'] }))} disabled={member.userId === JSON.parse(atob((localStorage.getItem('auth_token') || '').split('.')[1] || 'e30')).userId || Boolean(roleSavingId)} style={{ minWidth: '155px' }}>
+                      <select className="select-control" value={roleValue} onChange={event => setPendingRoles(previous => ({ ...previous, [member.userId]: event.target.value as TeamMemberRecord['role'] }))} disabled={member.userId === signedInUserId || Boolean(roleSavingId)} style={{ minWidth: '155px' }}>
                         {ROLE_OPTIONS.map(role => <option key={role} value={role}>{role}</option>)}
                       </select>
                     </td>
