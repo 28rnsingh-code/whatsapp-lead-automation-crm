@@ -135,4 +135,32 @@ describe('Authentication Hardening, Cryptographic JWTs & Membership Authorizatio
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('MEMBERSHIP_SUSPENDED');
   });
+  it('serves persisted team records to workspace Admins and denies non-admin team management', async () => {
+    const adminToken = signToken({
+      userId: 'user_rohan_singh',
+      email: 'rohan@bringmybite.in',
+      defaultTenantId: 'a0000000-0000-0000-0000-000000000001',
+    });
+    const listing = await request(app)
+      .get('/api/team/members')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .set('x-tenant-id', 'tenant_bring_my_bite');
+    expect(listing.status).toBe(200);
+    expect(Array.isArray(listing.body.data.members)).toBe(true);
+    expect(listing.body.data.maxMembers).toBe(2);
+    expect(listing.body.data.remainingSeats).toBeGreaterThanOrEqual(0);
+
+    const nonAdminToken = signToken({
+      userId: 'user_riya_singh',
+      email: 'riya@bringmybite.in',
+      defaultTenantId: 'a0000000-0000-0000-0000-000000000001',
+    });
+    const denied = await request(app)
+      .get('/api/team/members')
+      .set('Authorization', `Bearer ${nonAdminToken}`)
+      .set('x-tenant-id', 'tenant_bring_my_bite');
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_PERMISSIONS');
+  });
+
 });
