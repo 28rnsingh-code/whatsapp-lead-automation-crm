@@ -82,12 +82,6 @@ async function seedTestFixtures(): Promise<void> {
      WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE tenant_id = $1)`,
     [DEFAULT_TENANT_ID, DEFAULT_USER_ID]
   );
-  await pool.query(
-    `INSERT INTO whatsapp_templates (tenant_id, name, language, category, status, body)
-     SELECT $1, 'Welcome Message', 'en', 'UTILITY', 'APPROVED', 'Hello {{1}}, welcome.'
-     WHERE NOT EXISTS (SELECT 1 FROM whatsapp_templates WHERE tenant_id = $1)`,
-    [DEFAULT_TENANT_ID]
-  );
   await pool.end();
 }
 
