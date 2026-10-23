@@ -35,9 +35,28 @@ export const AuthPage: React.FC = () => {
     setTimeout(() => setMessage(''), 4000);
   };
 
-  const handleForgot = (e: React.FormEvent) => {
+  const handleForgot = async (e: React.FormEvent) => {
     e.preventDefault();
-    setMessage('✓ If an account exists for this address, a single-use expiring reset link has been dispatched.');
+    const form = e.currentTarget;
+    const formData = new FormData(form);
+    const recoveryEmail = String(formData.get('recoveryEmail') || '').trim();
+    try {
+      const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\\/+$/, '');
+      const apiBase = /^https?:\\/\\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
+        ? `${configuredApiBase}/api`
+        : configuredApiBase;
+      const res = await fetch(`${apiBase}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: recoveryEmail }),
+      });
+      const data = await res.json();
+      setIsError(!res.ok || !data.success);
+      setMessage(data.data?.message || data.error?.message || 'Password recovery is temporarily unavailable.');
+    } catch {
+      setIsError(true);
+      setMessage('Failed to connect to password recovery service.');
+    }
     setTimeout(() => setMessage(''), 5000);
   };
 
@@ -46,7 +65,7 @@ export const AuthPage: React.FC = () => {
       <div className="card" style={{ padding: '30px' }}>
         <div style={{ textAlign: 'center', marginBottom: '24px' }}>
           <div className="brandmark" style={{ margin: '0 auto 12px auto' }}>O</div>
-          <h1 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 4px 0' }}>OneClick Automics</h1>
+          <h1 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 4px 0' }}>One.Click Autonix</h1>
           <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
             {view === 'login' ? 'Sign in to access your CRM workspace' : 'Reset your workspace password'}
           </p>
@@ -110,7 +129,8 @@ export const AuthPage: React.FC = () => {
                 <input
                   type="email"
                   required
-                  placeholder="rohan@bringmybite.in"
+                  name="recoveryEmail"
+                  placeholder="one.clickautonix@gmail.com"
                   className="form-control"
                   style={{ width: '100%' }}
                 />
