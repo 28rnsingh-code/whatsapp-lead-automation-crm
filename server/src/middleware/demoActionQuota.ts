@@ -25,7 +25,7 @@ const READ_PREFIXES = [
 
 /**
  * Public demo access is isolated to one seeded tenant. Reads are allow-listed.
- * Mutations are allow-listed, atomically metered to five per signed session, and
+ * Mutations are allow-listed, atomically metered to five per persistent demo visitor, and
  * the WhatsApp send route is explicitly marked to simulate rather than send.
  */
 export async function demoActionQuota(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -43,7 +43,7 @@ export async function demoActionQuota(req: Request, res: Response, next: NextFun
     return next(); // The endpoint's normal auth middleware emits a 401.
   }
 
-  if (!payload.demoSessionId || payload.demo !== true || payload.email !== PUBLIC_DEMO_EMAIL) return next();
+  if (!payload.demoSessionId || !payload.demoVisitorId || payload.demo !== true || payload.email !== PUBLIC_DEMO_EMAIL) return next();
 
   const path = req.path.toLowerCase();
   const requestedTenantId = String(req.headers['x-tenant-id'] || '').trim();
@@ -54,7 +54,7 @@ export async function demoActionQuota(req: Request, res: Response, next: NextFun
     });
     return;
   }
-  if (!UUID_PATTERN.test(payload.demoSessionId)) {
+  if (!UUID_PATTERN.test(payload.demoSessionId) || !UUID_PATTERN.test(payload.demoVisitorId)) {
     res.status(401).json({
       success: false,
       error: { code: 'INVALID_DEMO_SESSION', message: 'The demo session is invalid. Please sign in again.', requestId: req.requestId },
@@ -82,7 +82,7 @@ export async function demoActionQuota(req: Request, res: Response, next: NextFun
       }
       const usage = await pool.query<{ action_count: number }>(
         'SELECT action_count FROM demo_usage_sessions WHERE tenant_id = $1 AND session_id = $2 LIMIT 1',
-        [PUBLIC_DEMO_TENANT_ID, payload.demoSessionId],
+        [PUBLIC_DEMO_TENANT_ID, payload.demoVisitorId],
       );
       const used = Number(usage.rows[0]?.action_count || 0);
       res.json({ success: true, data: { limit: PUBLIC_DEMO_MAX_ACTIONS, used, remaining: Math.max(0, PUBLIC_DEMO_MAX_ACTIONS - used), simulatedOutbound: true }, meta: { requestId: req.requestId } });
@@ -147,7 +147,7 @@ export async function demoActionQuota(req: Request, res: Response, next: NextFun
              updated_at = NOW()
          WHERE demo_usage_sessions.action_count < $3
        RETURNING action_count`,
-      [PUBLIC_DEMO_TENANT_ID, payload.demoSessionId, PUBLIC_DEMO_MAX_ACTIONS],
+      [PUBLIC_DEMO_TENANT_ID, payload.demoVisitorId, PUBLIC_DEMO_MAX_ACTIONS],
     );
 
     if (usage.rowCount !== 1) {
@@ -155,7 +155,7 @@ export async function demoActionQuota(req: Request, res: Response, next: NextFun
         success: false,
         error: {
           code: 'DEMO_LIMIT_REACHED',
-          message: 'You have used all 5 demo test actions for this session. Start a new demo session or sign in to a paid workspace.',
+          message: 'You have used all 5 demo test actions for this browser. Sign in to a paid workspace to continue.',
           limit: PUBLIC_DEMO_MAX_ACTIONS,
           used: PUBLIC_DEMO_MAX_ACTIONS,
           requestId: req.requestId,
