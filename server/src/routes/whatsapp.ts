@@ -467,11 +467,14 @@ router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
         // A status callback can race the send response that records Meta's
         // provider ID. Ask Meta to retry rather than silently losing the update.
         if (statusResult.rowCount === 0) {
-          res.status(503).json({
-            success: false,
-            error: { code: 'WHATSAPP_STATUS_NOT_READY', message: 'The outbound message is not yet available for status reconciliation; retry delivery.', requestId },
+          // Status notifications can also refer to messages sent outside this
+          // CRM, or arrive before provider_message_id is persisted. Do not ask
+          // Meta to retry indefinitely for an event this tenant cannot match.
+          console.warn('[WhatsApp Webhook] Unmatched provider status acknowledged', {
+            requestId,
+            status: event.statusUpdate,
           });
-          return;
+          continue;
         }
         processed += 1;
         continue;
@@ -843,17 +846,28 @@ router.post('/messages', requireAuth, requireTenant(['Admin', 'Sales Manager', '
         });
         return;
       }
-      const bodyComponent = Array.isArray(selectedTemplate.components)
-        ? selectedTemplate.components.find((component: any) => component.type === 'BODY')
-        : undefined;
+      const templateComponents = Array.isArray(selectedTemplate.components) ? selectedTemplate.components : [];
+      const bodyComponent = templateComponents.find((component: any) => component.type === 'BODY');
       const placeholders = typeof bodyComponent?.text === 'string'
         ? (bodyComponent.text.match(/\{\{\d+\}\}/g) || []).length
         : 0;
       const parameters = Array.isArray(templateParameters) ? templateParameters : [];
-      if (parameters.length !== placeholders) {
+      const buttons = templateComponents.find((component: any) => component.type === 'BUTTONS')?.buttons || [];
+      const hasDynamicButtonParameters = buttons.some((button: any) =>
+        (typeof button?.url === 'string' && /\{\{\d+\}\}/.test(button.url)) ||
+        (Array.isArray(button?.example) && button.example.length > 0)
+      );
+      if (hasDynamicButtonParameters) {
+        res.status(409).json({
+          success: false,
+          error: { code: 'WHATSAPP_TEMPLATE_BUTTON_PARAMETERS_UNSUPPORTED', message: 'This template has dynamic button parameters not supported by the current sender. Choose a compatible approved template.', requestId },
+        });
+        return;
+      }
+      if (parameters.length !== placeholders || parameters.some((value: unknown) => typeof value !== 'string' || !value.trim())) {
         res.status(400).json({
           success: false,
-          error: { code: 'WHATSAPP_TEMPLATE_PARAMETERS_MISMATCH', message: `The approved template requires ${placeholders} body parameter(s), but ${parameters.length} were provided.`, requestId },
+          error: { code: 'WHATSAPP_TEMPLATE_PARAMETERS_MISMATCH', message: `The approved template requires ${placeholders} non-empty body parameter(s), but ${parameters.length} were provided.`, requestId },
         });
         return;
       }
