@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+
 import {
   WhatsAppProviderAdapter,
   WhatsAppCredentials,
@@ -7,24 +8,69 @@ import {
   InboundMessageEvent,
 } from './types';
 
+export function getMetaGraphApiVersion(): string {
+  const configured = process.env.WHATSAPP_GRAPH_API_VERSION || 'v26.0';
+  if (!/^v\d+\.0$/.test(configured)) {
+    throw new Error('WHATSAPP_GRAPH_API_VERSION must use the format vNN.0.');
+  }
+  return configured;
+}
+
 export class CloudApiWhatsAppAdapter implements WhatsAppProviderAdapter {
   readonly id = 'cloud_api';
   readonly name = 'Meta Official WhatsApp Cloud API';
 
   async validateCredentials(credentials: WhatsAppCredentials): Promise<{ valid: boolean; error?: string }> {
-    if (!credentials.phoneNumberId || !credentials.phoneNumberId.trim()) {
+    if (!credentials.phoneNumberId?.trim()) {
       return { valid: false, error: 'Phone Number ID is required for Meta Cloud API.' };
     }
-    if (!credentials.accessToken || !credentials.accessToken.trim()) {
+    if (!credentials.accessToken?.trim()) {
       return { valid: false, error: 'Access Token is required for Meta Cloud API.' };
     }
 
-    // In a test environment or without live public credentials, validate format
-    if (credentials.accessToken.startsWith('invalid')) {
-      return { valid: false, error: 'Authentication failed: Invalid Meta User Access Token.' };
+    // CI uses isolated deterministic credentials; this bypass is test-only.
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+      return credentials.accessToken.startsWith('invalid')
+        ? { valid: false, error: 'Authentication failed: invalid test token.' }
+        : { valid: true };
     }
 
-    return { valid: true };
+    try {
+      const version = getMetaGraphApiVersion();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        const response = await fetch(
+          `https://graph.facebook.com/${version}/${encodeURIComponent(credentials.phoneNumberId)}?fields=id`,
+          {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${credentials.accessToken}` },
+            signal: controller.signal,
+          },
+        );
+        const payload = await response.json().catch(() => ({} as any));
+        if (!response.ok || payload.error) {
+          return {
+            valid: false,
+            error: payload.error?.message || `Meta credential check failed (HTTP ${response.status}).`,
+          };
+        }
+        if (String(payload.id || '') !== credentials.phoneNumberId) {
+          return { valid: false, error: 'Meta returned a different Phone Number ID than the one configured.' };
+        }
+        return { valid: true };
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (error) {
+      const aborted = error instanceof Error && error.name === 'AbortError';
+      return {
+        valid: false,
+        error: aborted
+          ? 'Meta credential verification timed out after 8 seconds.'
+          : 'Unable to verify credentials with Meta. Check server connectivity and retry.',
+      };
+    }
   }
 
   async sendMessage(params: OutboundMessageParams): Promise<OutboundMessageResult> {
@@ -68,17 +114,19 @@ export class CloudApiWhatsAppAdapter implements WhatsAppProviderAdapter {
       };
     }
 
-    // When running with mock/test tokens, simulate successful dispatch
-    if (credentials.accessToken.includes('mock') || credentials.accessToken.startsWith('test_')) {
-      return {
-        success: true,
-        providerMessageId: `wamid.HBgL${Date.now()}${Math.random().toString(36).substring(2, 6)}`,
-        status: 'sent',
-      };
+    // Fake provider responses are allowed only in isolated automated tests.
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+      if (credentials.accessToken.includes('mock') || credentials.accessToken.startsWith('test_')) {
+        return {
+          success: true,
+          providerMessageId: `test-wamid-${Date.now()}`,
+          status: 'sent',
+        };
+      }
     }
 
     try {
-      const response = await fetch(`https://graph.facebook.com/v18.0/${credentials.phoneNumberId}/messages`, {
+      const response = await fetch(`https://graph.facebook.com/${getMetaGraphApiVersion()}/${credentials.phoneNumberId}/messages`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

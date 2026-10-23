@@ -123,7 +123,7 @@ export const App: React.FC = () => {
       case 'whatsapp':
         return <WhatsAppPage />;
       case 'integrations':
-        return <IntegrationsPage />;
+        return <IntegrationsPage onNavigate={handleNavigate} />;
       case 'importexport':
         return <ImportExportPage />;
       case 'team':

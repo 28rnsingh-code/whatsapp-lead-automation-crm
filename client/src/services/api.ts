@@ -422,6 +422,7 @@ export interface WhatsAppConfigResponse {
     businessAccountId?: string;
     accessTokenMasked?: string;
     appSecretMasked?: string;
+    webhookVerifyTokenMasked?: string;
     apiKeyMasked?: string;
     sourceNumber?: string;
     status: 'connected' | 'unconfigured' | 'error';

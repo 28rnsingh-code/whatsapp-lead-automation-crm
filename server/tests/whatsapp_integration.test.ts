@@ -180,10 +180,6 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
       expect(res.body.error.code).toBe('WEBHOOK_SIGNATURE_REQUIRED');
     });
 
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.processed).toBe(1);
-    });
   });
 
   describe('5. Outbound Messages & Templates', () => {

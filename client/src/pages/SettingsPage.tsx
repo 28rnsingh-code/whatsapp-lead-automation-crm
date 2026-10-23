@@ -24,6 +24,7 @@ export const SettingsPage: React.FC = () => {
   const [waAccountId, setWaAccountId] = useState<string>('');
   const [waAccessToken, setWaAccessToken] = useState<string>('');
   const [waAppSecret, setWaAppSecret] = useState<string>('');
+  const [waWebhookVerifyToken, setWaWebhookVerifyToken] = useState<string>('');
   const [waSaving, setWaSaving] = useState<boolean>(false);
 
   // AI Auto-Reply Form State
@@ -125,14 +126,16 @@ export const SettingsPage: React.FC = () => {
         businessAccountId: waAccountId,
         accessToken: waAccessToken || undefined,
         appSecret: waAppSecret || undefined,
+        webhookVerifyToken: waWebhookVerifyToken || undefined,
       });
 
       if (res.data?.config) {
         setWaConfig((prev) => (prev ? { ...prev, config: res.data.config } : prev));
       }
-      showToast('WhatsApp provider configuration saved and verified!');
+      showToast('Provider credentials were verified and the configuration was saved.');
       setWaAccessToken('');
       setWaAppSecret('');
+      setWaWebhookVerifyToken('');
     } catch (err: any) {
       showToast(`Error saving WhatsApp config: ${err.message}`);
     } finally {
@@ -350,6 +353,23 @@ export const SettingsPage: React.FC = () => {
                 onChange={(e) => setWaAppSecret(e.target.value)}
                 style={{ width: '100%' }}
               />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', fontWeight: 600 }}>
+                Meta Webhook Verify Token
+              </label>
+              <input
+                type="password"
+                className="input-text"
+                placeholder={waConfig?.config.webhookVerifyTokenMasked || 'Enter a private verify token you also configure in Meta…'}
+                value={waWebhookVerifyToken}
+                onChange={(e) => setWaWebhookVerifyToken(e.target.value)}
+                style={{ width: '100%' }}
+              />
+              <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '4px' }}>
+                This token must match the verify token configured in Meta. It is separate from the App Secret used to verify webhook signatures.
+              </small>
             </div>
 
             {waConfig?.webhookUrl && (
