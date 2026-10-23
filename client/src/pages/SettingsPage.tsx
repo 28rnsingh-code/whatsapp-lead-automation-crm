@@ -499,7 +499,7 @@ export const SettingsPage: React.FC = () => {
               >
                 <option value="draft_only">Draft Only — Generate AI reply in composer for agent review</option>
                 <option value="approval_before_send">Approval Required — Show Approve & Send button before dispatch</option>
-                <option value="automatic_send">Automatic Send — Directly reply to inbound inquiries (Strict Consent Only)</option>
+                <option value="automatic_send" disabled>Automatic Send — unavailable until inbound automation and safe retry handling are implemented (Strict Consent Only)</option>
                 <option value="disabled">Disabled — Manual agent responses only</option>
               </select>
             </div>
