@@ -28,7 +28,13 @@ export async function seedDefaults(): Promise<SeedResult> {
   const tenantId = tenantRes.rows[0].id;
 
   // 2. Seed Default User (Rohan Singh)
-  const passwordHash = await hashPassword('Password123!');
+  const bootstrapAdminPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD
+    || (process.env.NODE_ENV === 'test' ? 'Password123!' : (process.env.NODE_ENV === 'production' ? '' : 'Password123!'));
+  if (process.env.NODE_ENV === 'production' &&
+      (!bootstrapAdminPassword || bootstrapAdminPassword.length < 16 || bootstrapAdminPassword === 'Password123!')) {
+    throw new Error('Production bootstrap requires a unique BOOTSTRAP_ADMIN_PASSWORD of at least 16 characters.');
+  }
+  const passwordHash = await hashPassword(bootstrapAdminPassword);
   const userRes = await pool.query<{ id: string }>(
     `INSERT INTO users (id, email_normalized, display_name, password_hash, status)
      VALUES ($1, 'rohan@bringmybite.in', 'Rohan Singh', $2, 'active')
