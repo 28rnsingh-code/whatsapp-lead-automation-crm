@@ -686,10 +686,10 @@ router.patch('/:id/consent', requireAuth, requireTenant(['Admin', 'Sales Manager
   try {
     const result = await pool.query(
       `UPDATE leads
-       SET consent_status = $1,
-           consent_source = CASE WHEN $1 = 'Consented' THEN $2 WHEN $1 = 'Opted Out' THEN 'customer_opt_out' ELSE NULL END,
-           consent_recorded_at = CASE WHEN $1 IN ('Consented', 'Opted Out') THEN NOW() ELSE NULL END,
-           opted_out_at = CASE WHEN $1 = 'Opted Out' THEN NOW() WHEN $1 = 'Consented' THEN NULL ELSE opted_out_at END,
+       SET consent_status = $1::varchar(50),
+           consent_source = CASE WHEN $1::varchar(50) = 'Consented' THEN $2 WHEN $1::varchar(50) = 'Opted Out' THEN 'customer_opt_out' ELSE NULL END,
+           consent_recorded_at = CASE WHEN $1::varchar(50) IN ('Consented', 'Opted Out') THEN NOW() ELSE NULL END,
+           opted_out_at = CASE WHEN $1::varchar(50) = 'Opted Out' THEN NOW() WHEN $1::varchar(50) = 'Consented' THEN NULL ELSE opted_out_at END,
            updated_at = NOW()
        WHERE id::text = $3 AND tenant_id = $4
        RETURNING id, consent_status as "consentStatus", consent_source as "consentSource",
