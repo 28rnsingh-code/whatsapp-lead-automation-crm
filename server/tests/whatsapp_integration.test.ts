@@ -134,16 +134,17 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
   });
 
   describe('4. Webhook Hub Verification & Ingestion', () => {
-    it('GET /api/whatsapp/webhook handles Meta Hub challenge challenge verification', async () => {
+    it('GET /api/whatsapp/webhook rejects unconfigured verification tokens', async () => {
       const challengeToken = 'hub_challenge_random_123456';
       const res = await request(app)
-        .get(`/api/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=oneclick_verify&hub.challenge=${challengeToken}`);
+        .get(`/api/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=unconfigured-token&hub.challenge=${challengeToken}`);
 
-      expect(res.status).toBe(200);
-      expect(res.text).toBe(challengeToken);
+      expect(res.status).toBe(403);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('WEBHOOK_VERIFICATION_DENIED');
     });
 
-    it('POST /api/whatsapp/webhook receives and acknowledges inbound messages', async () => {
+    it('POST /api/whatsapp/webhook rejects unsigned events even when a tenant header is provided', async () => {
       const res = await request(app)
         .post('/api/whatsapp/webhook')
         .set('x-tenant-id', 'tenant_bring_my_bite')
@@ -160,9 +161,9 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
                     messages: [
                       {
                         from: '919876543210',
-                        id: `wamid.test_${Date.now()}`,
+                        id: `wamid.unsigned_${Date.now()}`,
                         timestamp: `${Math.floor(Date.now() / 1000)}`,
-                        text: { body: 'Pricing inquiry from WhatsApp' },
+                        text: { body: 'Unsigned request must never be processed' },
                         type: 'text',
                       },
                     ],
@@ -173,6 +174,11 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
             },
           ],
         });
+
+      expect(res.status).toBe(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('WEBHOOK_SIGNATURE_REQUIRED');
+    });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);

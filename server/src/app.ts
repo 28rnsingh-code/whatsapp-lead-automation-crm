@@ -21,7 +21,14 @@ export function createApp(): Express {
 
   // Standard Middlewares
   app.use(cors());
-  app.use(express.json({ limit: '15mb' }));
+  app.use(express.json({
+    limit: '15mb',
+    verify: (req, _res, buffer) => {
+      // Meta webhook signatures are calculated over the exact original bytes,
+      // not JSON.stringify(req.body), which may produce a different byte stream.
+      (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+    },
+  }));
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
   app.use(requestIdMiddleware);
 

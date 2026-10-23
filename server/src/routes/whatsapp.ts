@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { getMetaPhoneNumberId, secureTokenEquals, verifyMetaWebhookSignature } from '../services/whatsapp/webhookSecurity';
 import { requireAuth } from '../middleware/auth';
 import { requireTenant } from '../middleware/tenant';
 import { pool, resolveDatabaseConfig } from '../db';
@@ -130,6 +131,7 @@ router.get('/config', requireAuth, requireTenant(), async (req: Request, res: Re
       if (rawConfig.accessToken) rawConfig.accessToken = decryptSecret(rawConfig.accessToken);
       if (rawConfig.apiKey) rawConfig.apiKey = decryptSecret(rawConfig.apiKey);
       if (rawConfig.appSecret) rawConfig.appSecret = decryptSecret(rawConfig.appSecret);
+      if (rawConfig.webhookVerifyToken) rawConfig.webhookVerifyToken = decryptSecret(rawConfig.webhookVerifyToken);
     }
 
     res.json({
@@ -206,6 +208,7 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
       ...configToStore,
       accessToken: accessToken ? encryptSecret(accessToken) : undefined,
       appSecret: appSecret ? encryptSecret(appSecret) : undefined,
+      webhookVerifyToken: webhookVerifyToken ? encryptSecret(webhookVerifyToken) : undefined,
       apiKey: apiKey ? encryptSecret(apiKey) : undefined,
     };
 
@@ -234,86 +237,159 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
   }
 });
 
-// 3. GET /api/whatsapp/webhook - Webhook Verification Challenge (Hub Challenge)
-router.get('/webhook', (req: Request, res: Response): void => {
+// 3. GET /api/whatsapp/webhook - Verify Meta challenge against a persisted workspace secret.
+router.get('/webhook', async (req: Request, res: Response): Promise<void> => {
   const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+  const suppliedToken = typeof req.query['hub.verify_token'] === 'string'
+    ? req.query['hub.verify_token']
+    : undefined;
+  const challenge = typeof req.query['hub.challenge'] === 'string'
+    ? req.query['hub.challenge']
+    : undefined;
+  const requestId = req.requestId || 'req_unknown';
 
-  // Accept verification if challenge provided
-  if (mode === 'subscribe' && token) {
-    res.status(200).send(challenge);
+  if (mode !== 'subscribe' || !suppliedToken || !challenge) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'INVALID_WEBHOOK_CHALLENGE', message: 'Meta webhook verification parameters are incomplete.', requestId },
+    });
     return;
   }
 
-  res.status(200).json({
-    success: true,
-    message: 'WhatsApp Webhook endpoint is active and listening.',
-  });
+  try {
+    const result = await pool.query<{ config_data: any }>(
+      `SELECT config_data
+       FROM tenant_settings
+       WHERE category = 'whatsapp'
+       ORDER BY updated_at DESC
+       LIMIT 100;`,
+    );
+
+    const verified = result.rows.some((row) => {
+      const config = typeof row.config_data === 'string' ? JSON.parse(row.config_data) : row.config_data;
+      const storedToken = config?.webhookVerifyToken
+        ? decryptSecret(String(config.webhookVerifyToken))
+        : '';
+      return secureTokenEquals(storedToken, suppliedToken);
+    });
+
+    if (!verified) {
+      res.status(403).json({
+        success: false,
+        error: { code: 'WEBHOOK_VERIFICATION_DENIED', message: 'The supplied webhook verification token does not match a configured workspace.', requestId },
+      });
+      return;
+    }
+
+    res.status(200).type('text/plain').send(challenge);
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_UNAVAILABLE')
+      : 'DATABASE_UNAVAILABLE';
+    console.error('[WhatsApp Webhook] Challenge verification failed', { requestId, errorCode });
+    res.status(503).json({
+      success: false,
+      error: { code: 'WEBHOOK_VERIFICATION_UNAVAILABLE', message: 'Webhook verification is unavailable until the database is healthy.', requestId },
+    });
+  }
 });
 
-// 4. POST /api/whatsapp/webhook - Inbound Event Processing & Deduplication
+// 4. POST /api/whatsapp/webhook - Verify provider signature before processing events.
 router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
-  const targetTenantId = (req.headers['x-tenant-id'] as string) || 'tenant_bring_my_bite';
-  const tenantId = toDbTenantId(targetTenantId);
-  const signature = (req.headers['x-hub-signature-256'] as string) || '';
+  const requestId = req.requestId || 'req_unknown';
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  const signature = typeof req.headers['x-hub-signature-256'] === 'string'
+    ? req.headers['x-hub-signature-256']
+    : undefined;
+  const phoneNumberId = getMetaPhoneNumberId(req.body);
+
+  if (!rawBody || !signature || !phoneNumberId) {
+    res.status(401).json({
+      success: false,
+      error: { code: 'WEBHOOK_SIGNATURE_REQUIRED', message: 'A valid signed Meta webhook with one configured phone-number ID is required.', requestId },
+    });
+    return;
+  }
+
+  let matchedTenantId: string | null = null;
+  let appSecret: string | null = null;
+  try {
+    const result = await pool.query<{ tenant_id: string; config_data: any }>(
+      `SELECT tenant_id, config_data
+       FROM tenant_settings
+       WHERE category = 'whatsapp'
+         AND config_data->>'phoneNumberId' = $1
+       LIMIT 2;`,
+      [phoneNumberId],
+    );
+    // Reject ambiguous phone-number mappings rather than selecting an arbitrary tenant.
+    if (result.rows.length !== 1) {
+      res.status(401).json({
+        success: false,
+        error: { code: 'WEBHOOK_WORKSPACE_NOT_CONFIGURED', message: 'No unique workspace configuration matches this Meta phone number.', requestId },
+      });
+      return;
+    }
+
+    const row = result.rows[0];
+    const config = typeof row.config_data === 'string' ? JSON.parse(row.config_data) : row.config_data;
+    appSecret = config?.appSecret ? decryptSecret(String(config.appSecret)) : null;
+    if (!appSecret || !verifyMetaWebhookSignature(rawBody, signature, appSecret)) {
+      res.status(401).json({
+        success: false,
+        error: { code: 'WEBHOOK_SIGNATURE_INVALID', message: 'The Meta webhook signature is missing or invalid.', requestId },
+      });
+      return;
+    }
+    matchedTenantId = row.tenant_id;
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_UNAVAILABLE')
+      : 'DATABASE_UNAVAILABLE';
+    console.error('[WhatsApp Webhook] Signature verification failed', { requestId, errorCode });
+    res.status(503).json({
+      success: false,
+      error: { code: 'WEBHOOK_VERIFICATION_UNAVAILABLE', message: 'Webhook verification is unavailable until the database is healthy.', requestId },
+    });
+    return;
+  }
 
   const adapter = getWhatsAppAdapter('cloud_api');
   const events = adapter.parseWebhookEvent(req.body);
-
   if (events.length === 0) {
-    // Ack immediately to WhatsApp provider to prevent webhook retries
-    res.status(200).json({ success: true, processed: 0 });
+    res.status(200).json({ success: true, processed: 0, requestId });
     return;
   }
 
-  const dbConfig = resolveDatabaseConfig();
+  // Resolve the tenant exclusively from the credential that passed HMAC verification;
+  // never use a caller-controlled x-tenant-id header for webhook ownership.
+  const tenantId = toDbTenantId(matchedTenantId!);
+  let processed = 0;
 
   for (const event of events) {
-    if (dbConfig.isBlocked) {
-      // In-memory deduplication check
-      const duplicate = IN_MEMORY_MESSAGES.find(m => m.providerMessageId === event.providerMessageId);
-      if (!duplicate && event.body) {
-        IN_MEMORY_MESSAGES.push({
-          id: `w-msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          tenantId: targetTenantId,
-          senderPhone: event.senderPhone,
-          recipientPhone: event.recipientPhone,
-          direction: 'inbound',
-          messageType: event.messageType,
-          body: event.body,
-          status: 'read',
-          providerMessageId: event.providerMessageId,
-          aiGenerated: false,
-          createdAt: event.timestamp.toISOString(),
-        });
-      }
-      continue;
-    }
-
     try {
-      // PostgreSQL idempotent insert with ON CONFLICT DO NOTHING
       await pool.query(
         `INSERT INTO whatsapp_messages (
-           tenant_id, sender_phone, recipient_phone, direction, message_type, body, status, provider_message_id, created_at
-         ) VALUES ($1, $2, $3, 'inbound', $4, $5, 'read', $6, $7)
+           tenant_id, sender_phone, recipient_phone, direction, message_type, body, status, provider_message_id, idempotency_key, created_at
+         ) VALUES ($1, $2, $3, 'inbound', $4, $5, 'received', $6, $6, $7)
          ON CONFLICT (tenant_id, idempotency_key) DO NOTHING;`,
-        [
-          tenantId,
-          event.senderPhone,
-          event.recipientPhone,
-          event.messageType,
-          event.body,
-          event.providerMessageId,
-          event.timestamp,
-        ]
-      ).catch(() => {});
-    } catch {
-      // Ignore webhook processing failures to maintain 200 response
+        [tenantId, event.senderPhone, event.recipientPhone, event.messageType, event.body, event.providerMessageId, event.timestamp],
+      );
+      processed += 1;
+    } catch (error) {
+      const errorCode = error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+        : 'DATABASE_ERROR';
+      console.error('[WhatsApp Webhook] Message persistence failed', { requestId, errorCode });
+      res.status(503).json({
+        success: false,
+        error: { code: 'WEBHOOK_PERSISTENCE_FAILED', message: 'The webhook event was not fully persisted; retry delivery.', requestId },
+      });
+      return;
     }
   }
 
-  res.status(200).json({ success: true, processed: events.length });
+  res.status(200).json({ success: true, processed, requestId });
 });
 
 // 5. GET /api/whatsapp/messages - Fetch Conversation Messages & Threads
