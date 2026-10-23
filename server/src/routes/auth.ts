@@ -4,6 +4,8 @@ import { loginRateLimiter } from '../middleware/rateLimiter';
 import { verifyPassword, signToken } from '../services/authService';
 import { pool } from '../db';
 import { SessionContext, RoleName } from '../types';
+import crypto from 'crypto';
+import { PUBLIC_DEMO_EMAIL, PUBLIC_DEMO_TENANT_ID } from '../middleware/demoActionQuota';
 
 const router = Router();
 
@@ -93,7 +95,8 @@ function sendError(res: Response, status: number, code: string, message: string,
 // Login validates against persistent PostgreSQL accounts; no demo users or passwords.
 router.post('/login', loginRateLimiter, async (req: Request, res: Response): Promise<void> => {
   const requestId = req.requestId || 'req_unknown';
-  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const rawEmail = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const email = rawEmail === 'demo' ? PUBLIC_DEMO_EMAIL : rawEmail;
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
 
   if (!email || !password) {
@@ -102,10 +105,21 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response): Pro
   }
 
   try {
+    const isDemoLogin = email === PUBLIC_DEMO_EMAIL;
+    if (isDemoLogin && process.env.PUBLIC_DEMO_ENABLED === 'false') {
+      sendError(res, 403, 'DEMO_DISABLED', 'The public demo is temporarily unavailable.', requestId);
+      return;
+    }
+    if (isDemoLogin && password !== (process.env.PUBLIC_DEMO_PASSWORD || 'demo123')) {
+      sendError(res, 401, 'INVALID_CREDENTIALS', 'Invalid demo credentials.', requestId);
+      return;
+    }
+
     const account = await loadAccount(email);
     if (!account || account.user_status !== 'active' || account.membership_status !== 'active' ||
         account.tenant_status !== 'active' || !account.password_hash ||
-        !(await verifyPassword(password, account.password_hash))) {
+        (!isDemoLogin && !(await verifyPassword(password, account.password_hash))) ||
+        (isDemoLogin && (account.tenant_slug !== 'public-demo' || account.tenant_id !== PUBLIC_DEMO_TENANT_ID || account.role_name !== 'Read-only'))) {
       sendError(res, 401, 'INVALID_CREDENTIALS', 'Invalid email or password combination.', requestId);
       return;
     }
@@ -115,11 +129,12 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response): Pro
       userId: account.user_id,
       email: account.email_normalized,
       defaultTenantId: account.tenant_id,
-    });
+      ...(isDemoLogin ? { demo: true, demoSessionId: crypto.randomUUID() } : {}),
+    }, isDemoLogin ? '2h' : undefined);
 
     res.json({
       success: true,
-      data: { token, session },
+      data: { token, session, ...(isDemoLogin ? { demo: { maxActions: 5, simulatedOutbound: true } } : {}) },
       meta: { requestId, serverTimestamp: new Date().toISOString() },
     });
   } catch (error) {
