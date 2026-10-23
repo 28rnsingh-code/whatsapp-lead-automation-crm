@@ -98,7 +98,7 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       // user by the signed JWT email claim. Authorization still depends on membership rows.
       if (!targetUserId && req.userEmail) {
         const userLookup = await pool.query<{ id: string }>(
-          `SELECT id FROM users WHERE email_normalized = $1 AND status = 'active' LIMIT 1`,
+          `SELECT id FROM users WHERE email_normalized = $1 LIMIT 1`,
           [req.userEmail.trim().toLowerCase()]
         );
         targetUserId = userLookup.rows[0]?.id ?? null;
@@ -131,22 +131,25 @@ export function requireTenant(allowedRoles?: RoleName[]) {
         }
       }
     } catch (error) {
-      if (error instanceof DatabaseSafetyError || (error as Error)?.name === 'DatabaseSafetyError') {
-        res.status(503).json({
-          success: false,
-          error: { code: 'DATABASE_SAFETY_BLOCKED', message: (error as Error).message, requestId },
-        });
-        return;
-      }
-      if (resolveDatabaseConfig().isBlocked) {
-        // Do not touch the shared development database in test mode. Let routes handle
-        // the configured safe mock/empty response for this request.
+      if (
+        (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') &&
+        resolveDatabaseConfig().isBlocked
+      ) {
+        // Test-only: the shared development DB guard rejects all DB access. Allow
+        // route-level safe fallbacks to respond; never bypass membership checks otherwise.
         req.tenantContext = {
           tenantId: targetTenantId,
           role: 'Admin',
           permissions: [],
         };
         next();
+        return;
+      }
+      if (error instanceof DatabaseSafetyError || (error as Error)?.name === 'DatabaseSafetyError') {
+        res.status(503).json({
+          success: false,
+          error: { code: 'DATABASE_SAFETY_BLOCKED', message: (error as Error).message, requestId },
+        });
         return;
       }
       console.error('[Tenant] Membership lookup failed', { requestId, error });
