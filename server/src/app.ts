@@ -14,6 +14,7 @@ import whatsappRoutes from './routes/whatsapp';
 import aiRoutes from './routes/ai';
 import reportRoutes from './routes/reports';
 import billingRoutes from './routes/billing';
+import { requireProductionDatabaseReady } from './middleware/databaseReadiness';
 
 export function createApp(): Express {
   const app = express();
@@ -26,6 +27,8 @@ export function createApp(): Express {
 
   // Mount API Routes
   app.use('/api', healthRoutes);
+  // Keep demo/in-memory route fallbacks out of production whenever PostgreSQL is not ready.
+  app.use('/api', requireProductionDatabaseReady);
   app.use('/api/auth', authRoutes);
   app.use('/api/workspaces', workspaceRoutes);
   app.use('/api/leads', leadRoutes);

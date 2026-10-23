@@ -20,6 +20,12 @@ describe('OneClick Automics CRM API Contracts & Envelope', () => {
     expect(res.headers['x-request-id']).toBeDefined();
   });
 
+  it('GET /api/health remains a liveness endpoint independent of database readiness', async () => {
+    const res = await request(app).get('/api/health');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveProperty('status', 'healthy');
+  });
+
   it('GET /api/ready verifies the database before claiming readiness', async () => {
     const res = await request(app).get('/api/ready');
     expect(res.status).toBe(200);
