@@ -566,10 +566,10 @@ router.get('/messages', requireAuth, requireTenant(), async (req: Request, res: 
 
     if (leadId && typeof leadId === 'string') {
       params.push(leadId);
-      whereSql += ` AND lead_id::text = ${params.length}`;
+      whereSql += ` AND lead_id::text = $${params.length}`;
     } else if (phone && typeof phone === 'string') {
       params.push(phone);
-      whereSql += ` AND (sender_phone = ${params.length} OR recipient_phone = ${params.length})`;
+      whereSql += ` AND (sender_phone = $${params.length} OR recipient_phone = $${params.length})`;
     }
 
     const result = await pool.query(
