@@ -302,6 +302,17 @@ export async function updateLeadApi(id: string, payload: any): Promise<Lead> {
   });
 }
 
+export async function updateLeadConsentApi(
+  id: string,
+  consentStatus: 'Consented' | 'Unknown' | 'Opted Out',
+  consentSource?: string,
+): Promise<Pick<Lead, 'id' | 'consentStatus' | 'consentSource' | 'consentRecordedAt' | 'optedOutAt'>> {
+  return apiRequest(`/leads/${encodeURIComponent(id)}/consent`, {
+    method: 'PATCH',
+    body: JSON.stringify({ consentStatus, consentSource }),
+  });
+}
+
 export async function deleteLeadApi(id: string): Promise<{ id: string; deleted: boolean }> {
   return apiRequest<{ id: string; deleted: boolean }>(`/leads/${encodeURIComponent(id)}`, {
     method: 'DELETE',
@@ -470,8 +481,10 @@ export async function sendWhatsAppMessageApi(payload: {
   recipientPhone: string;
   body?: string;
   templateName?: string;
+  templateLanguage?: string;
   templateParameters?: string[];
-  leadId?: string;
+  leadId: string;
+  idempotencyKey: string;
 }): Promise<WhatsAppMessageItem> {
   return apiRequest<WhatsAppMessageItem>('/whatsapp/messages', {
     method: 'POST',
