@@ -35,6 +35,7 @@ export const App: React.FC = () => {
 
     const handleUnauthorized = () => {
       localStorage.removeItem('auth_token');
+      localStorage.removeItem('active_tenant_id');
       setAuthState('unauthenticated');
       setCurrentPage('auth');
     };
@@ -50,6 +51,7 @@ export const App: React.FC = () => {
         })
         .catch(() => {
           localStorage.removeItem('auth_token');
+          localStorage.removeItem('active_tenant_id');
           if (!cancelled) {
             setAuthState('unauthenticated');
             setCurrentPage('auth');

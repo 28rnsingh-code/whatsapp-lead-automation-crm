@@ -29,6 +29,23 @@ describe('OneClick Automics CRM API Contracts & Envelope', () => {
     expect(res.body.meta).toHaveProperty('requestId');
   });
 
+  it('GET /api/workspaces returns persisted active memberships for the signed-in account', async () => {
+    const res = await request(app)
+      .get('/api/workspaces')
+      .set('Authorization', `Bearer ${validToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    for (const workspace of res.body.data) {
+      expect(workspace).toHaveProperty('id');
+      expect(workspace).toHaveProperty('name');
+      expect(workspace).toHaveProperty('role');
+      expect(workspace.id).toMatch(/^[0-9a-f-]{36}$/i);
+    }
+  });
+
   it('GET /api/workspaces without auth header should return 401 Unauthenticated', async () => {
     const res = await request(app).get('/api/workspaces');
     expect(res.status).toBe(401);

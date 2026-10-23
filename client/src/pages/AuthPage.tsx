@@ -26,6 +26,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
       const data = await res.json();
       if (data.success && data.data?.token) {
         localStorage.setItem('auth_token', data.data.token);
+        const initialTenantId = data.data.session?.tenant?.id;
+        if (typeof initialTenantId === 'string' && initialTenantId) {
+          localStorage.setItem('active_tenant_id', initialTenantId);
+        } else {
+          localStorage.removeItem('active_tenant_id');
+        }
         setIsError(false);
         setMessage('✓ Successfully signed in to OneClick Automics CRM.');
         onLogin();

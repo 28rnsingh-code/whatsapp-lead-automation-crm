@@ -5,7 +5,7 @@ const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(
 const API_BASE = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
   ? `${configuredApiBase}/api`
   : configuredApiBase;
-function getTenantIdFromToken(token: string): string | null {
+export function getDefaultTenantIdFromToken(token: string): string | null {
   try {
     const payload = token.split('.')[1];
     if (!payload) return null;
@@ -15,6 +15,11 @@ function getTenantIdFromToken(token: string): string | null {
   } catch {
     return null;
   }
+}
+
+function getTenantIdFromToken(token: string): string | null {
+  const selectedTenantId = localStorage.getItem('active_tenant_id');
+  return selectedTenantId || getDefaultTenantIdFromToken(token);
 }
 
 /**
@@ -78,6 +83,23 @@ async function apiRequest<T>(
 export async function fetchAuthSessionApi(): Promise<any> {
   return apiRequest<any>('/auth/session', { method: 'GET' });
 }
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  slug: string;
+  status: 'active' | 'suspended' | 'trial';
+  timezone: string;
+  currency: string;
+  locale: string;
+  createdAt: string;
+  updatedAt: string;
+  role: string;
+}
+
+export async function fetchWorkspacesApi(): Promise<WorkspaceSummary[]> {
+  return apiRequest<WorkspaceSummary[]>('/workspaces', { method: 'GET' });
+}
+
 
 export interface FetchLeadsParams {
   q?: string;
