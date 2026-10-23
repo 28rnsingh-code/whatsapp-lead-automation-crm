@@ -377,6 +377,16 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
           .set('x-tenant-id', 'tenant_bring_my_bite')
           .send({ consentStatus: 'Opted Out' });
         expect(optedOut.status).toBe(200);
+        expect(optedOut.body.data.optedOutAt).toBeTruthy();
+
+        // Switching the label back to Unknown must not silently clear a prior opt-out.
+        const resetToUnknown = await request(app)
+          .patch(`/api/leads/${lead.id}/consent`)
+          .set('Authorization', `Bearer ${rohanToken}`)
+          .set('x-tenant-id', 'tenant_bring_my_bite')
+          .send({ consentStatus: 'Unknown' });
+        expect(resetToUnknown.status).toBe(200);
+        expect(resetToUnknown.body.data.optedOutAt).toBeTruthy();
 
         const afterOptOut = await request(app)
           .post('/api/whatsapp/messages')
@@ -384,12 +394,34 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
           .set('x-tenant-id', 'tenant_bring_my_bite')
           .send({
             recipientPhone: phone,
-            body: 'Must not send after opt-out',
+            body: 'Must not send after opt-out or while consent is unknown',
             leadId: lead.id,
             idempotencyKey: `optout-block-${lead.id}`,
           });
         expect(afterOptOut.status).toBe(403);
         expect(afterOptOut.body.error.code).toBe('WHATSAPP_CONSENT_REQUIRED');
+
+        // Only a fresh, explicit consent update may clear the recorded opt-out.
+        const renewedConsent = await request(app)
+          .patch(`/api/leads/${lead.id}/consent`)
+          .set('Authorization', `Bearer ${rohanToken}`)
+          .set('x-tenant-id', 'tenant_bring_my_bite')
+          .send({ consentStatus: 'Consented', consentSource: 'website_form' });
+        expect(renewedConsent.status).toBe(200);
+        expect(renewedConsent.body.data.optedOutAt).toBeNull();
+
+        const afterRenewedConsent = await request(app)
+          .post('/api/whatsapp/messages')
+          .set('Authorization', `Bearer ${rohanToken}`)
+          .set('x-tenant-id', 'tenant_bring_my_bite')
+          .send({
+            recipientPhone: phone,
+            body: 'Test message after explicit renewed consent',
+            leadId: lead.id,
+            idempotencyKey: `renewed-consent-${lead.id}`,
+          });
+        expect(afterRenewedConsent.status).toBe(201);
+        expect(afterRenewedConsent.body.data.direction).toBe('outbound');
       } finally {
         await cleanupTestLead(lead.id, phone);
       }
