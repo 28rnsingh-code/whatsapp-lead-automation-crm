@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-interface AuthPageProps { onLogin: () => void; }
+interface AuthPageProps { onLogin: (mustChangePassword?: boolean) => void; }
 
 export const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
   const [view, setView] = useState<'login' | 'forgot'>('login');
@@ -48,7 +48,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
         }
         setIsError(false);
         setMessage('✓ Successfully signed in to OneClick Automics CRM.');
-        onLogin();
+        onLogin(Boolean(data.data.session?.mustChangePassword));
       } else {
         setIsError(true);
         setMessage(data.error?.message || 'Authentication failed.');
