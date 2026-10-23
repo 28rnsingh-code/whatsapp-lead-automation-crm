@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import { getMetaPhoneNumberId, secureTokenEquals, verifyMetaWebhookSignature } from '../services/whatsapp/webhookSecurity';
 import { getMetaGraphApiVersion } from '../services/whatsapp/cloudApiAdapter';
 import { requireAuth } from '../middleware/auth';
@@ -22,6 +23,45 @@ function isTestRuntime(): boolean {
 
 function sendWhatsAppUnavailable(res: Response, requestId: string, code: string, message: string): void {
   res.status(503).json({ success: false, error: { code, message, requestId } });
+}
+
+function normalizeWhatsAppPhone(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return null;
+  if (trimmed.startsWith('+')) return `+${digits}`;
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
+  return `+${digits}`;
+}
+
+function sendExistingMessage(res: Response, existing: any, requestId: string, requestHash: string): void {
+  if (!existing || existing.idempotencyRequestHash !== requestHash) {
+    res.status(409).json({
+      success: false,
+      error: { code: 'IDEMPOTENCY_KEY_REUSED', message: 'This idempotency key was already used for a different or unverified message request. Use a new key only for a genuinely new user action.', requestId },
+    });
+    return;
+  }
+  const payload = {
+    id: existing.id,
+    tenantId: existing.tenantId,
+    leadId: existing.leadId,
+    senderPhone: existing.senderPhone,
+    recipientPhone: existing.recipientPhone,
+    direction: existing.direction,
+    messageType: existing.messageType,
+    body: existing.body,
+    status: existing.status,
+    providerMessageId: existing.providerMessageId,
+    createdAt: existing.createdAt,
+  };
+  if (existing.status === 'queued') {
+    res.status(202).json({ success: true, data: payload, meta: { requestId, idempotentReplay: true, processing: true } });
+    return;
+  }
+  res.status(200).json({ success: true, data: payload, meta: { requestId, idempotentReplay: true } });
 }
 
 async function loadTenantWhatsAppConfig(tenantId: string): Promise<any | null> {
@@ -297,8 +337,7 @@ router.get('/webhook', async (req: Request, res: Response): Promise<void> => {
       `SELECT config_data
        FROM tenant_settings
        WHERE category = 'whatsapp'
-       ORDER BY updated_at DESC
-       LIMIT 100;`,
+       ORDER BY updated_at DESC;`,
     );
 
     const verified = result.rows.some((row) => {
@@ -348,7 +387,6 @@ router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
   }
 
   let matchedTenantId: string | null = null;
-  let appSecret: string | null = null;
   try {
     const result = await pool.query<{ tenant_id: string; config_data: any }>(
       `SELECT tenant_id, config_data
@@ -358,7 +396,6 @@ router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
        LIMIT 2;`,
       [phoneNumberId],
     );
-    // Reject ambiguous phone-number mappings rather than selecting an arbitrary tenant.
     if (result.rows.length !== 1) {
       res.status(401).json({
         success: false,
@@ -369,7 +406,7 @@ router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
 
     const row = result.rows[0];
     const config = typeof row.config_data === 'string' ? JSON.parse(row.config_data) : row.config_data;
-    appSecret = config?.appSecret ? decryptSecret(String(config.appSecret)) : null;
+    const appSecret = config?.appSecret ? decryptSecret(String(config.appSecret)) : '';
     if (!appSecret || !verifyMetaWebhookSignature(rawBody, signature, appSecret)) {
       res.status(401).json({
         success: false,
@@ -397,26 +434,94 @@ router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  // Resolve the tenant exclusively from the credential that passed HMAC verification;
-  // never use a caller-controlled x-tenant-id header for webhook ownership.
-  const tenantId = toDbTenantId(matchedTenantId!);
+  // Resolve ownership only from the workspace configuration whose app secret
+  // verified the exact request body. Ignore caller-controlled tenant headers.
+  const tenantId = matchedTenantId!;
   let processed = 0;
 
   for (const event of events) {
+    if (!event.providerMessageId || !event.providerMessageId.trim()) {
+      console.warn('[WhatsApp Webhook] Skipping provider event without an ID', { requestId });
+      continue;
+    }
+
     try {
+      if (event.statusUpdate) {
+        const statusResult = await pool.query(
+          `UPDATE whatsapp_messages
+           SET status = $1,
+               error_message = CASE WHEN $1 = 'failed' THEN 'Meta reported message delivery failure.' ELSE NULL END
+           WHERE tenant_id = $2
+             AND provider_message_id = $3
+             AND direction = 'outbound'
+           RETURNING id;`,
+          [event.statusUpdate, tenantId, event.providerMessageId],
+        );
+        // A status callback can race the send response that records Meta's
+        // provider ID. Ask Meta to retry rather than silently losing the update.
+        if (statusResult.rowCount === 0) {
+          res.status(503).json({
+            success: false,
+            error: { code: 'WHATSAPP_STATUS_NOT_READY', message: 'The outbound message is not yet available for status reconciliation; retry delivery.', requestId },
+          });
+          return;
+        }
+        processed += 1;
+        continue;
+      }
+
+      const senderDigits = event.senderPhone.replace(/\D/g, '');
+      let leadId: string | null = null;
+      let contactId: string | null = null;
+
+      const leadResult = await pool.query<{ id: string }>(
+        `SELECT id
+         FROM leads
+         WHERE tenant_id = $1
+           AND regexp_replace(phone_normalized, '[^0-9]', '', 'g') = $2
+         ORDER BY created_at DESC
+         LIMIT 1;`,
+        [tenantId, senderDigits],
+      );
+      leadId = leadResult.rows[0]?.id || null;
+
+      if (!leadId) {
+        const contactResult = await pool.query<{ id: string }>(
+          `SELECT id
+           FROM contacts
+           WHERE tenant_id = $1
+             AND regexp_replace(phone_normalized, '[^0-9]', '', 'g') = $2
+         ORDER BY created_at DESC
+         LIMIT 1;`,
+          [tenantId, senderDigits],
+        );
+        contactId = contactResult.rows[0]?.id || null;
+      }
+
       await pool.query(
         `INSERT INTO whatsapp_messages (
-           tenant_id, sender_phone, recipient_phone, direction, message_type, body, status, provider_message_id, idempotency_key, created_at
-         ) VALUES ($1, $2, $3, 'inbound', $4, $5, 'received', $6, $6, $7)
+           tenant_id, lead_id, contact_id, sender_phone, recipient_phone, direction,
+           message_type, body, status, provider_message_id, idempotency_key, created_at
+         ) VALUES ($1, $2, $3, $4, $5, 'inbound', $6, $7, 'received', $8, $8, $9)
          ON CONFLICT (tenant_id, idempotency_key) DO NOTHING;`,
-        [tenantId, event.senderPhone, event.recipientPhone, event.messageType, event.body, event.providerMessageId, event.timestamp],
+        [
+          tenantId,
+          leadId,
+          contactId,
+          event.senderPhone,
+          event.recipientPhone,
+          event.messageType,
+          event.body,
+          event.providerMessageId,
+          event.timestamp,
+        ],
       );
       processed += 1;
     } catch (error) {
       const errorCode = error && typeof error === 'object' && 'code' in error
         ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
         : 'DATABASE_ERROR';
-      console.error('[WhatsApp Webhook] Message persistence failed', { requestId, errorCode });
+      console.error('[WhatsApp Webhook] Event persistence failed', { requestId, errorCode });
       res.status(503).json({
         success: false,
         error: { code: 'WEBHOOK_PERSISTENCE_FAILED', message: 'The webhook event was not fully persisted; retry delivery.', requestId },
@@ -449,14 +554,12 @@ router.get('/messages', requireAuth, requireTenant(), async (req: Request, res: 
     const params: any[] = [tenantId];
     let whereSql = 'tenant_id = $1';
 
-    if (phone && typeof phone === 'string') {
-      params.push(phone);
-      whereSql += ` AND (sender_phone = $${params.length} OR recipient_phone = $${params.length})`;
-    }
-
     if (leadId && typeof leadId === 'string') {
       params.push(leadId);
-      whereSql += ` AND lead_id::text = $${params.length}`;
+      whereSql += ` AND lead_id::text = ${params.length}`;
+    } else if (phone && typeof phone === 'string') {
+      params.push(phone);
+      whereSql += ` AND (sender_phone = ${params.length} OR recipient_phone = ${params.length})`;
     }
 
     const result = await pool.query(
@@ -487,30 +590,97 @@ router.get('/messages', requireAuth, requireTenant(), async (req: Request, res: 
   }
 });
 
-// 6. POST /api/whatsapp/messages - Dispatch Outbound Message
+// 6. POST /api/whatsapp/messages - Policy-checked, idempotent outbound dispatch.
 router.post('/messages', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
-  const tenantId = toDbTenantId(req.tenantContext!.tenantId);
-  const rawTenantId = req.tenantContext!.tenantId;
+  const tenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
-  const { recipientPhone, body, templateName, templateParameters, leadId, idempotencyKey } = req.body;
+  const {
+    recipientPhone,
+    body,
+    templateName,
+    templateLanguage,
+    templateParameters,
+    leadId,
+    idempotencyKey,
+  } = req.body || {};
 
-  if (!recipientPhone || !recipientPhone.trim()) {
+  if (typeof recipientPhone !== 'string' || !recipientPhone.trim()) {
     res.status(400).json({
       success: false,
       error: { code: 'VALIDATION_ERROR', message: 'Recipient phone number is required.', requestId },
     });
     return;
   }
-
-  if (!body && !templateName) {
+  const normalizedRecipient = normalizeWhatsAppPhone(recipientPhone);
+  if (!normalizedRecipient) {
     res.status(400).json({
       success: false,
-      error: { code: 'VALIDATION_ERROR', message: 'Message body or template name is required.', requestId },
+      error: { code: 'INVALID_RECIPIENT_PHONE', message: 'Enter a valid recipient phone number.', requestId },
+    });
+    return;
+  }
+  const hasTemplate = typeof templateName === 'string' && templateName.trim().length > 0;
+  const messageBody = typeof body === 'string' ? body.trim() : '';
+  if (!hasTemplate && !messageBody) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Message body or approved template name is required.', requestId },
+    });
+    return;
+  }
+  if (typeof leadId !== 'string' || !leadId.trim()) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'LEAD_REQUIRED', message: 'Select a CRM lead before sending a WhatsApp message.', requestId },
+    });
+    return;
+  }
+  if (typeof idempotencyKey !== 'string' || idempotencyKey.trim().length < 8 || idempotencyKey.trim().length > 255) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'A unique idempotency key is required to prevent duplicate message sends.', requestId },
     });
     return;
   }
 
-  // Outbound messages require a real, persisted workspace configuration.
+  const stableKey = idempotencyKey.trim();
+  const requestHash = crypto.createHash('sha256').update(JSON.stringify({
+    leadId: leadId.trim(),
+    recipientPhone: normalizedRecipient,
+    messageType: hasTemplate ? 'template' : 'text',
+    body: hasTemplate ? '' : messageBody,
+    templateName: hasTemplate ? templateName.trim() : '',
+    templateLanguage: hasTemplate ? (typeof templateLanguage === 'string' ? templateLanguage.trim() : '') : '',
+    templateParameters: hasTemplate && Array.isArray(templateParameters) ? templateParameters : [],
+  })).digest('hex');
+
+  // Idempotency is checked before any provider call. A duplicate click/retry may
+  // return the original result, but must never dispatch a second provider message.
+  try {
+    const existingResult = await pool.query(
+      `SELECT id, tenant_id as "tenantId", lead_id as "leadId", sender_phone as "senderPhone",
+              recipient_phone as "recipientPhone", direction, message_type as "messageType",
+              body, status, provider_message_id as "providerMessageId",
+              idempotency_request_hash as "idempotencyRequestHash", created_at as "createdAt"
+       FROM whatsapp_messages
+       WHERE tenant_id = $1 AND idempotency_key = $2
+       LIMIT 1;`,
+      [tenantId, stableKey],
+    );
+    if (existingResult.rows.length) {
+      sendExistingMessage(res, existingResult.rows[0], requestId, requestHash);
+      return;
+    }
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[WhatsApp Messages] Idempotency lookup failed', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_STORAGE_UNAVAILABLE', 'Message history could not be checked safely. No message was sent.');
+    return;
+  }
+
+  // Require a real, persisted workspace provider configuration.
   let rawConfig: any = null;
   try {
     rawConfig = await loadTenantWhatsAppConfig(tenantId);
@@ -519,10 +689,9 @@ router.post('/messages', requireAuth, requireTenant(), async (req: Request, res:
       ? String((error as { code?: unknown }).code || 'DATABASE_UNAVAILABLE')
       : 'DATABASE_UNAVAILABLE';
     console.error('[WhatsApp Messages] Provider configuration lookup failed', { requestId, errorCode });
-    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_CONFIG_UNAVAILABLE', 'Saved provider configuration could not be loaded.');
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_CONFIG_UNAVAILABLE', 'Saved provider configuration could not be loaded. No message was sent.');
     return;
   }
-
   if (!rawConfig || rawConfig.status !== 'connected') {
     res.status(409).json({
       success: false,
@@ -531,39 +700,272 @@ router.post('/messages', requireAuth, requireTenant(), async (req: Request, res:
     return;
   }
 
-  if (rawConfig.provider === 'mock' && process.env.NODE_ENV === 'production') {
-    res.status(409).json({
-      success: false,
-      error: { code: 'WHATSAPP_MOCK_DISABLED', message: 'The mock provider is disabled in production.', requestId },
-    });
-    return;
-  }
-
   let adapter;
   try {
     adapter = getWhatsAppAdapter(rawConfig.provider);
   } catch {
-    res.status(400).json({
+    res.status(409).json({
       success: false,
       error: { code: 'WHATSAPP_PROVIDER_UNSUPPORTED', message: 'This WhatsApp provider is not implemented in the current release.', requestId },
     });
     return;
   }
 
-  // Send message through provider adapter
-  const sendResult = await adapter.sendMessage({
-    tenantId,
-    recipientPhone: recipientPhone.trim(),
-    messageType: templateName ? 'template' : 'text',
-    body: body || `Template: ${templateName}`,
-    templateName,
-    templateParameters,
-    idempotencyKey,
-    leadId,
-    credentials: rawConfig,
-  });
+  // Validate the target lead and explicit consent on the server; the UI is not
+  // a trust boundary. Historical rows without evidence require re-confirmation.
+  let lead: any;
+  try {
+    const leadResult = await pool.query(
+      `SELECT id, phone_normalized as "phoneNormalized", consent_status as "consentStatus",
+              consent_source as "consentSource", consent_recorded_at as "consentRecordedAt",
+              opted_out_at as "optedOutAt"
+       FROM leads
+       WHERE tenant_id = $1 AND id::text = $2
+       LIMIT 1;`,
+      [tenantId, leadId.trim()],
+    );
+    lead = leadResult.rows[0];
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[WhatsApp Messages] Lead eligibility lookup failed', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_ELIGIBILITY_UNAVAILABLE', 'Lead consent could not be verified. No message was sent.');
+    return;
+  }
+  if (!lead) {
+    res.status(404).json({
+      success: false,
+      error: { code: 'LEAD_NOT_FOUND', message: 'The selected lead was not found in this workspace.', requestId },
+    });
+    return;
+  }
+  if (normalizeWhatsAppPhone(lead.phoneNormalized) !== normalizedRecipient) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'RECIPIENT_LEAD_MISMATCH', message: 'The recipient number does not match the selected CRM lead.', requestId },
+    });
+    return;
+  }
+  if (lead.consentStatus !== 'Consented' || !lead.consentSource || !lead.consentRecordedAt || lead.optedOutAt) {
+    res.status(403).json({
+      success: false,
+      error: { code: 'WHATSAPP_CONSENT_REQUIRED', message: 'Explicit, recorded WhatsApp consent is required and the lead must not have opted out.', requestId },
+    });
+    return;
+  }
+
+  let effectiveTemplateLanguage = typeof templateLanguage === 'string' ? templateLanguage.trim() : '';
+  let persistedBody = messageBody;
+  if (hasTemplate) {
+    if (rawConfig.provider !== 'cloud_api') {
+      res.status(409).json({
+        success: false,
+        error: { code: 'WHATSAPP_TEMPLATE_PROVIDER_UNSUPPORTED', message: 'Approved template lookup is implemented only for the Meta Cloud API in this release.', requestId },
+      });
+      return;
+    }
+
+    let selectedTemplate: any = null;
+    if (isTestRuntime()) {
+      selectedTemplate = PREDEFINED_TEMPLATES.find((template) =>
+        template.name === templateName.trim() &&
+        (!effectiveTemplateLanguage || template.language === effectiveTemplateLanguage),
+      ) || null;
+    } else {
+      if (!rawConfig.businessAccountId || !rawConfig.accessToken) {
+        res.status(409).json({
+          success: false,
+          error: { code: 'WHATSAPP_TEMPLATES_NOT_CONFIGURED', message: 'Verified Meta business account credentials are required to verify this template.', requestId },
+        });
+        return;
+      }
+      try {
+        const endpoint = new URL(`https://graph.facebook.com/${getMetaGraphApiVersion()}/${encodeURIComponent(rawConfig.businessAccountId)}/message_templates`);
+        endpoint.searchParams.set('fields', 'name,status,language,category,components');
+        endpoint.searchParams.set('name', templateName.trim());
+        endpoint.searchParams.set('limit', '100');
+        const response = await fetch(endpoint.toString(), {
+          headers: { Authorization: `Bearer ${rawConfig.accessToken}` },
+          signal: AbortSignal.timeout(8000),
+        });
+        const payload = await response.json().catch(() => ({} as any));
+        if (!response.ok || payload.error) {
+          const upstreamStatus = response.status;
+          console.error('[WhatsApp Messages] Template verification failed', { requestId, upstreamStatus, code: payload.error?.code });
+          res.status(502).json({
+            success: false,
+            error: { code: 'META_TEMPLATE_VERIFICATION_FAILED', message: payload.error?.message || `Meta template verification failed (HTTP ${upstreamStatus}). No message was sent.`, requestId },
+          });
+          return;
+        }
+        const templates = Array.isArray(payload.data) ? payload.data : [];
+        selectedTemplate = templates.find((template: any) =>
+          template.name === templateName.trim() &&
+          template.status === 'APPROVED' &&
+          (!effectiveTemplateLanguage || template.language === effectiveTemplateLanguage),
+        ) || null;
+      } catch (error) {
+        const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+        res.status(502).json({
+          success: false,
+          error: { code: 'META_TEMPLATE_VERIFICATION_FAILED', message: timedOut ? 'Meta template verification timed out. No message was sent.' : 'Meta template verification is unavailable. No message was sent.', requestId },
+        });
+        return;
+      }
+    }
+
+    if (!selectedTemplate || selectedTemplate.status !== 'APPROVED') {
+      res.status(409).json({
+        success: false,
+        error: { code: 'WHATSAPP_TEMPLATE_NOT_APPROVED', message: 'Only an approved template from the configured provider can be sent.', requestId },
+      });
+      return;
+    }
+    effectiveTemplateLanguage = effectiveTemplateLanguage || selectedTemplate.language || 'en';
+    if (!isTestRuntime()) {
+      const bodyComponent = Array.isArray(selectedTemplate.components)
+        ? selectedTemplate.components.find((component: any) => component.type === 'BODY')
+        : undefined;
+      const placeholders = typeof bodyComponent?.text === 'string'
+        ? (bodyComponent.text.match(/\{\{\d+\}\}/g) || []).length
+        : 0;
+      const parameters = Array.isArray(templateParameters) ? templateParameters : [];
+      if (parameters.length !== placeholders) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'WHATSAPP_TEMPLATE_PARAMETERS_MISMATCH', message: `The approved template requires ${placeholders} body parameter(s), but ${parameters.length} were provided.`, requestId },
+        });
+        return;
+      }
+    }
+    persistedBody = `[Template: ${templateName.trim()}]`;
+  } else {
+    // WhatsApp customer-service free-form messages are only allowed within
+    // 24 hours of the customer's last inbound message.
+    try {
+      const senderDigits = normalizedRecipient.replace(/\D/g, '');
+      const inboundResult = await pool.query(
+        `SELECT created_at
+         FROM whatsapp_messages
+         WHERE tenant_id = $1
+           AND direction = 'inbound'
+           AND (
+             lead_id = $2
+             OR (
+               lead_id IS NULL
+               AND regexp_replace(sender_phone, '[^0-9]', '', 'g') = $3
+             )
+           )
+         ORDER BY created_at DESC
+         LIMIT 1;`,
+        [tenantId, lead.id, senderDigits],
+      );
+      const lastInboundAt = inboundResult.rows[0]?.created_at
+        ? new Date(inboundResult.rows[0].created_at).getTime()
+        : Number.NaN;
+      const ageMs = Date.now() - lastInboundAt;
+      if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs >= 24 * 60 * 60 * 1000) {
+        res.status(409).json({
+          success: false,
+          error: { code: 'WHATSAPP_TEMPLATE_REQUIRED', message: 'The 24-hour customer-service window is not open. Choose an approved template instead; no message was sent.', requestId },
+        });
+        return;
+      }
+    } catch (error) {
+      const errorCode = error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+        : 'DATABASE_ERROR';
+      console.error('[WhatsApp Messages] Customer-service window lookup failed', { requestId, errorCode });
+      sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_WINDOW_UNAVAILABLE', 'The customer-service window could not be verified. No message was sent.');
+      return;
+    }
+  }
+
+  const finalTemplateParameters = hasTemplate && Array.isArray(templateParameters)
+    ? templateParameters.filter((value: unknown): value is string => typeof value === 'string')
+    : undefined;
+
+  // Persist intent before calling the provider. If a timeout occurs after Meta
+  // accepts a message, retrying with this key returns the stored row and cannot
+  // accidentally dispatch a second message.
+  let queued: any;
+  try {
+    const inserted = await pool.query(
+      `INSERT INTO whatsapp_messages (
+         tenant_id, lead_id, sender_phone, recipient_phone, direction, message_type,
+         body, status, idempotency_key, idempotency_request_hash, created_at
+       ) VALUES ($1, $2, $3, $4, 'outbound', $5, $6, 'queued', $7, $8, NOW())
+       ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+       RETURNING id, tenant_id as "tenantId", lead_id as "leadId", sender_phone as "senderPhone",
+                 recipient_phone as "recipientPhone", direction, message_type as "messageType",
+                 body, status, provider_message_id as "providerMessageId",
+                 idempotency_request_hash as "idempotencyRequestHash", created_at as "createdAt";`,
+      [
+        tenantId,
+        lead.id,
+        rawConfig.displayPhoneNumber || rawConfig.sourceNumber || '',
+        normalizedRecipient,
+        hasTemplate ? 'template' : 'text',
+        persistedBody,
+        stableKey,
+        requestHash,
+      ],
+    );
+    queued = inserted.rows[0] || null;
+    if (!queued) {
+      const existingResult = await pool.query(
+        `SELECT id, tenant_id as "tenantId", lead_id as "leadId", sender_phone as "senderPhone",
+                recipient_phone as "recipientPhone", direction, message_type as "messageType",
+                body, status, provider_message_id as "providerMessageId",
+                idempotency_request_hash as "idempotencyRequestHash", created_at as "createdAt"
+         FROM whatsapp_messages
+         WHERE tenant_id = $1 AND idempotency_key = $2
+         LIMIT 1;`,
+        [tenantId, stableKey],
+      );
+      sendExistingMessage(res, existingResult.rows[0], requestId, requestHash);
+      return;
+    }
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[WhatsApp Messages] Queue persistence failed', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_QUEUE_FAILED', 'The message could not be safely queued. No message was sent.');
+    return;
+  }
+
+  let sendResult;
+  try {
+    sendResult = await adapter.sendMessage({
+      tenantId,
+      recipientPhone: normalizedRecipient,
+      messageType: hasTemplate ? 'template' : 'text',
+      body: messageBody || `Template: ${templateName}`,
+      templateName: hasTemplate ? templateName.trim() : undefined,
+      templateLanguage: hasTemplate ? effectiveTemplateLanguage : undefined,
+      templateParameters: finalTemplateParameters,
+      idempotencyKey: stableKey,
+      leadId: lead.id,
+      credentials: rawConfig,
+    });
+  } catch (error) {
+    console.error('[WhatsApp Messages] Provider adapter threw unexpectedly', { requestId });
+    sendResult = { success: false, status: 'failed' as const, error: 'WhatsApp provider request failed unexpectedly.' };
+  }
 
   if (!sendResult.success) {
+    try {
+      await pool.query(
+        `UPDATE whatsapp_messages
+         SET status = 'failed', error_message = $1
+         WHERE tenant_id = $2 AND id = $3;`,
+        [(sendResult.error || 'Provider rejected the message.').slice(0, 1000), tenantId, queued.id],
+      );
+    } catch (error) {
+      console.error('[WhatsApp Messages] Failed to persist provider failure status', { requestId });
+    }
     res.status(502).json({
       success: false,
       error: {
@@ -575,52 +977,25 @@ router.post('/messages', requireAuth, requireTenant(), async (req: Request, res:
     return;
   }
 
-  const newMsg = {
-    id: `w-msg-${Date.now()}`,
-    tenantId: rawTenantId,
-    leadId: leadId || undefined,
-    senderPhone: rawConfig.phoneNumberId ? `+${rawConfig.phoneNumberId}` : '+919999988888',
-    recipientPhone: recipientPhone.trim(),
-    direction: 'outbound',
-    messageType: templateName ? 'template' : 'text',
-    body: body || `[Template: ${templateName}]`,
-    status: sendResult.status,
-    providerMessageId: sendResult.providerMessageId,
-    idempotencyKey: idempotencyKey || undefined,
-    aiGenerated: false,
-    createdAt: new Date().toISOString(),
-  };
-
   try {
-    const result = await pool.query(
-      `INSERT INTO whatsapp_messages (
-         tenant_id, lead_id, sender_phone, recipient_phone, direction, message_type,
-         body, status, idempotency_key, provider_message_id, created_at
-       ) VALUES ($1, $2, $3, $4, 'outbound', $5, $6, $7, $8, $9, NOW())
+    const updated = await pool.query(
+      `UPDATE whatsapp_messages
+       SET status = $1, provider_message_id = $2, error_message = NULL
+       WHERE tenant_id = $3 AND id = $4
        RETURNING id, tenant_id as "tenantId", lead_id as "leadId", direction,
                  sender_phone as "senderPhone", recipient_phone as "recipientPhone",
-                 message_type as "messageType", body, status, provider_message_id as "providerMessageId",
-                 created_at as "createdAt";`,
-      [
-        tenantId,
-        leadId || null,
-        newMsg.senderPhone,
-        newMsg.recipientPhone,
-        newMsg.messageType,
-        newMsg.body,
-        newMsg.status,
-        idempotencyKey || null,
-        sendResult.providerMessageId,
-      ]
+                 message_type as "messageType", body, status,
+                 provider_message_id as "providerMessageId", created_at as "createdAt";`,
+      [sendResult.status, sendResult.providerMessageId || null, tenantId, queued.id],
     );
-
-    res.status(201).json({ success: true, data: result.rows[0], meta: { requestId } });
-  } catch (error: any) {
-    if (error.name === 'DatabaseSafetyError') {
-      res.status(503).json({ success: false, error: { code: 'DATABASE_SAFETY_BLOCKED', message: error.message, requestId } });
+    if (!updated.rows[0]) {
+      sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_STATUS_PERSIST_FAILED', 'The provider accepted the send request but message status could not be confirmed. Check message history before retrying.');
       return;
     }
-    res.status(500).json({ success: false, error: { code: 'DATABASE_ERROR', message: error.message, requestId } });
+    res.status(201).json({ success: true, data: updated.rows[0], meta: { requestId } });
+  } catch (error) {
+    console.error('[WhatsApp Messages] Provider accepted send but status persistence failed', { requestId });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_STATUS_PERSIST_FAILED', 'The provider may have accepted the message but the final status could not be stored. Check message history before retrying.');
   }
 });
 
