@@ -22,6 +22,7 @@ import { fetchAuthSessionApi } from './services/api';
 
 export const App: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<NavigationPage>('dashboard');
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('theme') === 'dark';
@@ -73,6 +74,7 @@ export const App: React.FC = () => {
   const handleNavigate = (page: NavigationPage) => {
     if (page === 'auth') {
       localStorage.removeItem('auth_token');
+      localStorage.removeItem('active_tenant_id');
       setAuthState('unauthenticated');
       setCurrentPage('auth');
       return;
@@ -109,7 +111,7 @@ export const App: React.FC = () => {
       case 'onboarding':
         return <OnboardingPage onNavigate={handleNavigate} />;
       case 'leads':
-        return <LeadsPage />;
+        return <LeadsPage key={globalSearchQuery} initialSearchQuery={globalSearchQuery} />;
       case 'pipeline':
         return <PipelinePage />;
       case 'followups':
@@ -159,6 +161,11 @@ export const App: React.FC = () => {
       onNavigate={handleNavigate}
       isDarkMode={isDarkMode}
       onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
+      onGlobalSearch={(query) => {
+        if (!query.trim()) return;
+        setGlobalSearchQuery(query.trim());
+        setCurrentPage('leads');
+      }}
     >
       {renderCurrentPage()}
       <ToastContainer toasts={toasts} onDismiss={handleDismissToast} />

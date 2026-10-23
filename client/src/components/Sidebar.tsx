@@ -7,6 +7,7 @@ export interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
   onOpenWorkspaceModal: () => void;
+  onOpenPlans: () => void;
   currentWorkspaceName: string;
 }
 
@@ -40,6 +41,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpen,
   onClose,
   onOpenWorkspaceModal,
+  onOpenPlans,
   currentWorkspaceName,
 }) => {
   return (
@@ -48,7 +50,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="brand">
         <div className="brandmark">O</div>
         <div className="brand-text">
-          <strong>OneClick Automics</strong>
+          <strong>One.Click Autonix</strong>
           <small>CRM + WhatsApp Lead SaaS</small>
         </div>
       </div>
@@ -99,7 +101,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             type="button"
             className="btn btn-primary"
             style={{ width: '100%', fontSize: '11px', padding: '6px 8px', justifyContent: 'center' }}
-            onClick={() => alert('Plan upgrade checkout flow')}
+            onClick={onOpenPlans}
           >
             Explore Plans
           </button>

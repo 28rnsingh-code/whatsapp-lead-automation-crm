@@ -5,8 +5,10 @@ import { LeadDetailModal } from '../components/LeadDetailModal';
 import { Lead } from '../types';
 import { fetchLeadsApi, createLeadApi } from '../services/api';
 
-export const LeadsPage: React.FC = () => {
-  const [search, setSearch] = useState('');
+export interface LeadsPageProps { initialSearchQuery?: string; }
+
+export const LeadsPage: React.FC<LeadsPageProps> = ({ initialSearchQuery = '' }) => {
+  const [search, setSearch] = useState(initialSearchQuery);
   const [stageFilter, setStageFilter] = useState('All');
   const [sourceFilter, setSourceFilter] = useState('All');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
