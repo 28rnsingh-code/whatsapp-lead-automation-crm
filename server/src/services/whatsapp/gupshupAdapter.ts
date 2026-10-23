@@ -17,10 +17,15 @@ export class GupshupWhatsAppAdapter implements WhatsAppProviderAdapter {
     if (!credentials.sourceNumber || !credentials.sourceNumber.trim()) {
       return { valid: false, error: 'Source Phone Number is required for Gupshup.' };
     }
-    if (credentials.apiKey.startsWith('invalid')) {
-      return { valid: false, error: 'Authentication failed: Invalid Gupshup API Key.' };
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+      return credentials.apiKey.startsWith('invalid')
+        ? { valid: false, error: 'Authentication failed: Invalid Gupshup API Key.' }
+        : { valid: true };
     }
-    return { valid: true };
+    return {
+      valid: false,
+      error: 'Live Gupshup credential verification is not implemented yet; this provider cannot be marked connected in production.',
+    };
   }
 
   async sendMessage(params: OutboundMessageParams): Promise<OutboundMessageResult> {
@@ -30,10 +35,11 @@ export class GupshupWhatsAppAdapter implements WhatsAppProviderAdapter {
       return { success: false, status: 'failed', error: 'Missing Gupshup credentials.' };
     }
 
-    if (credentials.apiKey.includes('mock') || credentials.apiKey.startsWith('test_')) {
+    if ((process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') &&
+        (credentials.apiKey.includes('mock') || credentials.apiKey.startsWith('test_'))) {
       return {
         success: true,
-        providerMessageId: `gupshup-msg-${Date.now()}`,
+        providerMessageId: `test-gupshup-msg-${Date.now()}`,
         status: 'sent',
       };
     }

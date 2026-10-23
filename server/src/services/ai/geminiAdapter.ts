@@ -13,7 +13,10 @@ export class GeminiAdapter implements AiProviderAdapter {
       return { valid: false, error: 'Authentication failed: Invalid Gemini API key.' };
     }
     if (apiKey.startsWith('test_') || apiKey.includes('mock')) {
-      return { valid: true };
+      if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+        return { valid: true };
+      }
+      return { valid: false, error: 'Test/mock API keys are allowed only in isolated automated tests.' };
     }
 
     try {
@@ -42,12 +45,20 @@ export class GeminiAdapter implements AiProviderAdapter {
     const targetModel = config.model || 'gemini-1.5-flash';
 
     if (config.apiKey && (config.apiKey.startsWith('test_') || config.apiKey.includes('mock'))) {
+      if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+        return {
+          success: true,
+          replyText: `Hello ${leadName || 'valued customer'}! Thanks for contacting us. We received your note: "${incomingMessage}". Let us assist you with that today.`,
+          confidence: 0.94,
+          tokensUsed: 38,
+          model: targetModel,
+        };
+      }
       return {
-        success: true,
-        replyText: `Hello ${leadName || 'valued customer'}! Thanks for contacting us. We received your note: "${incomingMessage}". Let us assist you with that today.`,
-        confidence: 0.94,
-        tokensUsed: 38,
+        success: false,
+        confidence: 0,
         model: targetModel,
+        error: 'Test/mock AI credentials are disabled outside automated tests.',
       };
     }
 

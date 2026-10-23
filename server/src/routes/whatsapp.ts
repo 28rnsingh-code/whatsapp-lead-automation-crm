@@ -1,4 +1,7 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
+import { getMetaPhoneNumberId, secureTokenEquals, verifyMetaWebhookSignature } from '../services/whatsapp/webhookSecurity';
+import { getMetaGraphApiVersion } from '../services/whatsapp/cloudApiAdapter';
 import { requireAuth } from '../middleware/auth';
 import { requireTenant } from '../middleware/tenant';
 import { pool, resolveDatabaseConfig } from '../db';
@@ -7,12 +10,98 @@ import {
   getWhatsAppAdapter,
   getAllSupportedWhatsAppProviders,
   maskCredentials,
+  hasSecureEncryptionKey,
   encryptSecret,
   decryptSecret,
 } from '../services/whatsapp/adapterRegistry';
 import { WhatsAppCredentials, WhatsAppTemplate } from '../services/whatsapp/types';
 
 const router = Router();
+
+function isProductionRuntime(): boolean {
+  return process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
+}
+
+function isTestRuntime(): boolean {
+  return process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+}
+
+function sendWhatsAppUnavailable(res: Response, requestId: string, code: string, message: string): void {
+  res.status(503).json({ success: false, error: { code, message, requestId } });
+}
+
+function normalizeWhatsAppPhone(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return null;
+  if (trimmed.startsWith('+')) return `+${digits}`;
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
+  return `+${digits}`;
+}
+
+function sendExistingMessage(res: Response, existing: any, requestId: string, requestHash: string): void {
+  if (!existing || !existing.idempotencyRequestHash || existing.idempotencyRequestHash !== requestHash) {
+    res.status(409).json({
+      success: false,
+      error: { code: 'IDEMPOTENCY_KEY_REUSED', message: 'This idempotency key was already used for a different or unverified message request. Use a new key only for a genuinely new user action.', requestId },
+    });
+    return;
+  }
+  const payload = {
+    id: existing.id,
+    tenantId: existing.tenantId,
+    leadId: existing.leadId,
+    senderPhone: existing.senderPhone,
+    recipientPhone: existing.recipientPhone,
+    direction: existing.direction,
+    messageType: existing.messageType,
+    body: existing.body,
+    status: existing.status,
+    providerMessageId: existing.providerMessageId,
+    createdAt: existing.createdAt,
+  };
+  if (existing.status === 'queued') {
+    res.status(202).json({ success: true, data: payload, meta: { requestId, idempotentReplay: true, processing: true } });
+    return;
+  }
+  if (existing.status === 'failed') {
+    res.status(502).json({
+      success: false,
+      error: { code: 'WHATSAPP_PREVIOUS_ATTEMPT_FAILED', message: 'The previous attempt is recorded as failed and was not resent. Check provider/message history before creating a new send attempt.', requestId },
+    });
+    return;
+  }
+  res.status(200).json({ success: true, data: payload, meta: { requestId, idempotentReplay: true } });
+}
+
+async function loadTenantWhatsAppConfig(tenantId: string): Promise<any | null> {
+  const result = await pool.query(
+    `SELECT config_data
+     FROM tenant_settings
+     WHERE tenant_id = $1 AND category = 'whatsapp'
+     LIMIT 1;`,
+    [tenantId],
+  );
+  if (!result.rows.length) return null;
+  const stored = typeof result.rows[0].config_data === 'string'
+    ? JSON.parse(result.rows[0].config_data)
+    : result.rows[0].config_data;
+  const config = { ...stored };
+  for (const key of ['accessToken', 'appSecret', 'webhookVerifyToken', 'apiKey', 'authToken']) {
+    if (typeof config[key] === 'string' && config[key]) config[key] = decryptSecret(config[key]);
+  }
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    config.status = 'error';
+    config.errorMessage = 'ENCRYPTION_KEY is missing or unsafe. No outbound messages can be sent until a secure persistent encryption key is configured.';
+  } else if (config.provider === 'cloud_api' &&
+    (!config.phoneNumberId || !config.businessAccountId || !config.accessToken || !config.appSecret || !config.webhookVerifyToken)) {
+    config.status = 'error';
+    config.errorMessage = 'WhatsApp credentials are incomplete. Re-save the Meta Phone Number ID, WABA ID, access token, App Secret, and webhook verify token.';
+  }
+  return config;
+}
 
 const TENANT_UUID_MAP: Record<string, string> = {
   tenant_bring_my_bite: DEFAULT_TENANT_ID,
@@ -75,7 +164,7 @@ const PREDEFINED_TEMPLATES: WhatsAppTemplate[] = [
     name: 'welcome_lead_intro',
     language: 'en',
     category: 'UTILITY',
-    header: 'Welcome to {{company}}',
+    header: 'Welcome',
     body: 'Hello {{name}}, thank you for contacting us! A dedicated relationship manager will reach out shortly.',
     status: 'APPROVED',
   },
@@ -97,15 +186,18 @@ const PREDEFINED_TEMPLATES: WhatsAppTemplate[] = [
   },
 ];
 
-// 1. GET /api/whatsapp/config - Get current tenant provider configuration (Masked)
+// 1. GET /api/whatsapp/config - Read the persisted workspace provider configuration.
 router.get('/config', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
-  const rawTenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
   const dbConfig = resolveDatabaseConfig();
 
   if (dbConfig.isBlocked) {
-    const rawConfig = IN_MEMORY_SETTINGS[rawTenantId] || { provider: 'mock', status: 'unconfigured' };
+    if (!isTestRuntime()) {
+      sendWhatsAppUnavailable(res, requestId, 'DATABASE_CONFIGURATION_INVALID', 'WhatsApp configuration cannot be loaded because the database configuration is invalid.');
+      return;
+    }
+    const rawConfig = IN_MEMORY_SETTINGS[req.tenantContext!.tenantId] || { provider: 'cloud_api', status: 'unconfigured' };
     res.json({
       success: true,
       data: {
@@ -119,19 +211,7 @@ router.get('/config', requireAuth, requireTenant(), async (req: Request, res: Re
   }
 
   try {
-    const result = await pool.query(
-      `SELECT config_data FROM tenant_settings WHERE tenant_id = $1 AND category = 'whatsapp' LIMIT 1;`,
-      [tenantId]
-    );
-
-    let rawConfig: any = { provider: 'cloud_api', status: 'unconfigured' };
-    if (result.rows.length > 0) {
-      rawConfig = result.rows[0].config_data;
-      if (rawConfig.accessToken) rawConfig.accessToken = decryptSecret(rawConfig.accessToken);
-      if (rawConfig.apiKey) rawConfig.apiKey = decryptSecret(rawConfig.apiKey);
-      if (rawConfig.appSecret) rawConfig.appSecret = decryptSecret(rawConfig.appSecret);
-    }
-
+    const rawConfig = await loadTenantWhatsAppConfig(tenantId) || { provider: 'cloud_api', status: 'unconfigured' };
     res.json({
       success: true,
       data: {
@@ -141,179 +221,363 @@ router.get('/config', requireAuth, requireTenant(), async (req: Request, res: Re
       },
       meta: { requestId },
     });
-  } catch (error: any) {
-    res.json({
-      success: true,
-      data: {
-        config: maskCredentials({ provider: 'mock', status: 'unconfigured' }),
-        supportedProviders: getAllSupportedWhatsAppProviders(),
-        webhookUrl: `${req.protocol}://${req.get('host')}/api/whatsapp/webhook`,
-      },
-      meta: { requestId },
-    });
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_UNAVAILABLE')
+      : 'DATABASE_UNAVAILABLE';
+    console.error('[WhatsApp Config] Read failed', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_CONFIG_UNAVAILABLE', 'Saved WhatsApp configuration could not be loaded.');
   }
 });
 
-// 2. POST /api/whatsapp/config - Save & test credentials for tenant
-router.post('/config', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
+// 2. POST /api/whatsapp/config - Verify provider credentials, then persist encrypted settings.
+router.post('/config', requireAuth, requireTenant(['Admin', 'Sales Manager']), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
-  const rawTenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
-  const { provider = 'cloud_api', phoneNumberId, businessAccountId, accessToken, appSecret, webhookVerifyToken, apiKey, sourceNumber } = req.body;
-
-  const credentials: WhatsAppCredentials = {
-    provider,
-    phoneNumberId,
-    businessAccountId,
-    accessToken,
-    appSecret,
-    webhookVerifyToken,
-    apiKey,
-    sourceNumber,
-  };
-
-  const adapter = getWhatsAppAdapter(provider);
-  const validation = await adapter.validateCredentials(credentials);
-
-  const status = validation.valid ? 'connected' : 'error';
-  const errorMessage = validation.error;
-  const lastTestedAt = new Date().toISOString();
-
-  const configToStore: any = {
-    ...credentials,
-    status,
-    errorMessage,
-    lastTestedAt,
-  };
-
+  const body = req.body || {};
   const dbConfig = resolveDatabaseConfig();
+
   if (dbConfig.isBlocked) {
-    IN_MEMORY_SETTINGS[rawTenantId] = configToStore;
-    res.json({
-      success: true,
-      data: {
-        config: maskCredentials(configToStore),
-        validation,
-      },
-      meta: { requestId },
+    sendWhatsAppUnavailable(res, requestId, 'DATABASE_CONFIGURATION_INVALID', 'WhatsApp configuration cannot be saved until the database is configured.');
+    return;
+  }
+
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    sendWhatsAppUnavailable(res, requestId, 'ENCRYPTION_KEY_MISSING', 'A unique persistent ENCRYPTION_KEY of at least 32 characters must be configured before provider secrets can be saved.');
+    return;
+  }
+
+  let existing: any = null;
+  try {
+    existing = await loadTenantWhatsAppConfig(tenantId);
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_UNAVAILABLE')
+      : 'DATABASE_UNAVAILABLE';
+    console.error('[WhatsApp Config] Existing configuration could not be loaded', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_CONFIG_UNAVAILABLE', 'Existing WhatsApp settings could not be loaded safely.');
+    return;
+  }
+
+  const provider = typeof body.provider === 'string' && body.provider ? body.provider : existing?.provider || 'cloud_api';
+  let adapter;
+  try {
+    adapter = getWhatsAppAdapter(provider as any);
+  } catch {
+    res.status(400).json({
+      success: false,
+      error: { code: 'WHATSAPP_PROVIDER_UNSUPPORTED', message: 'This WhatsApp provider is not implemented in the current release.', requestId },
     });
     return;
   }
 
-  try {
-    // Encrypt sensitive secrets before persisting to PostgreSQL
-    const encryptedConfig = {
-      ...configToStore,
-      accessToken: accessToken ? encryptSecret(accessToken) : undefined,
-      appSecret: appSecret ? encryptSecret(appSecret) : undefined,
-      apiKey: apiKey ? encryptSecret(apiKey) : undefined,
-    };
+  const keepOrReplace = (next: unknown, previous: unknown): string | undefined => {
+    if (typeof next === 'string' && next.trim()) return next.trim();
+    return typeof previous === 'string' && previous ? previous : undefined;
+  };
 
+  const credentials: WhatsAppCredentials = {
+    provider: provider as any,
+    phoneNumberId: keepOrReplace(body.phoneNumberId, existing?.phoneNumberId),
+    businessAccountId: keepOrReplace(body.businessAccountId, existing?.businessAccountId),
+    accessToken: keepOrReplace(body.accessToken, existing?.accessToken),
+    appSecret: keepOrReplace(body.appSecret, existing?.appSecret),
+    webhookVerifyToken: keepOrReplace(body.webhookVerifyToken, existing?.webhookVerifyToken),
+    apiKey: keepOrReplace(body.apiKey, existing?.apiKey),
+    sourceNumber: keepOrReplace(body.sourceNumber, existing?.sourceNumber),
+  };
+
+  if (provider === 'cloud_api' &&
+      (!credentials.phoneNumberId || !credentials.businessAccountId || !credentials.accessToken || !credentials.appSecret || !credentials.webhookVerifyToken)) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'WHATSAPP_CONFIG_INCOMPLETE', message: 'Meta configuration requires Phone Number ID, WABA Business Account ID, access token, App Secret, and webhook verify token.', requestId },
+    });
+    return;
+  }
+
+  const validation = await adapter.validateCredentials(credentials);
+  if (!validation.valid) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'WHATSAPP_CREDENTIALS_INVALID', message: validation.error || 'Provider credentials could not be verified.', requestId },
+      data: { validation: { valid: false } },
+    });
+    return;
+  }
+
+  const configToStore: any = {
+    ...credentials,
+    status: 'connected',
+    errorMessage: undefined,
+    lastTestedAt: new Date().toISOString(),
+  };
+  const encryptedConfig = {
+    ...configToStore,
+    accessToken: credentials.accessToken ? encryptSecret(credentials.accessToken) : undefined,
+    appSecret: credentials.appSecret ? encryptSecret(credentials.appSecret) : undefined,
+    webhookVerifyToken: credentials.webhookVerifyToken ? encryptSecret(credentials.webhookVerifyToken) : undefined,
+    apiKey: credentials.apiKey ? encryptSecret(credentials.apiKey) : undefined,
+    authToken: credentials.authToken ? encryptSecret(credentials.authToken) : undefined,
+  };
+
+  try {
     await pool.query(
       `INSERT INTO tenant_settings (tenant_id, category, config_data, updated_at)
        VALUES ($1, 'whatsapp', $2, NOW())
        ON CONFLICT (tenant_id, category)
        DO UPDATE SET config_data = $2, updated_at = NOW();`,
-      [tenantId, JSON.stringify(encryptedConfig)]
+      [tenantId, JSON.stringify(encryptedConfig)],
     );
 
     res.json({
       success: true,
       data: {
         config: maskCredentials(configToStore),
-        validation,
+        validation: { valid: true },
       },
       meta: { requestId },
     });
-  } catch (error: any) {
-    if (error.name === 'DatabaseSafetyError') {
-      res.status(503).json({ success: false, error: { code: 'DATABASE_SAFETY_BLOCKED', message: error.message, requestId } });
-      return;
-    }
-    res.status(500).json({ success: false, error: { code: 'DATABASE_ERROR', message: error.message, requestId } });
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[WhatsApp Config] Save failed', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_CONFIG_SAVE_FAILED', 'WhatsApp configuration could not be saved.');
   }
 });
 
-// 3. GET /api/whatsapp/webhook - Webhook Verification Challenge (Hub Challenge)
-router.get('/webhook', (req: Request, res: Response): void => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-
-  // Accept verification if challenge provided
-  if (mode === 'subscribe' && token) {
-    res.status(200).send(challenge);
+// 3. GET /api/whatsapp/webhook - Verify Meta challenge against a persisted workspace secret.
+router.get('/webhook', async (req: Request, res: Response): Promise<void> => {
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    sendWhatsAppUnavailable(res, req.requestId || 'req_unknown', 'ENCRYPTION_KEY_MISSING', 'Webhook verification is disabled until a unique persistent ENCRYPTION_KEY is configured.');
     return;
   }
 
-  res.status(200).json({
-    success: true,
-    message: 'WhatsApp Webhook endpoint is active and listening.',
-  });
+  const mode = req.query['hub.mode'];
+  const suppliedToken = typeof req.query['hub.verify_token'] === 'string'
+    ? req.query['hub.verify_token']
+    : undefined;
+  const challenge = typeof req.query['hub.challenge'] === 'string'
+    ? req.query['hub.challenge']
+    : undefined;
+  const requestId = req.requestId || 'req_unknown';
+
+  if (mode !== 'subscribe' || !suppliedToken || !challenge) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'INVALID_WEBHOOK_CHALLENGE', message: 'Meta webhook verification parameters are incomplete.', requestId },
+    });
+    return;
+  }
+
+  try {
+    const result = await pool.query<{ config_data: any }>(
+      `SELECT config_data
+       FROM tenant_settings
+       WHERE category = 'whatsapp'
+       ORDER BY updated_at DESC;`,
+    );
+
+    const verified = result.rows.some((row) => {
+      const config = typeof row.config_data === 'string' ? JSON.parse(row.config_data) : row.config_data;
+      const storedToken = config?.webhookVerifyToken
+        ? decryptSecret(String(config.webhookVerifyToken))
+        : '';
+      return secureTokenEquals(storedToken, suppliedToken);
+    });
+
+    if (!verified) {
+      res.status(403).json({
+        success: false,
+        error: { code: 'WEBHOOK_VERIFICATION_DENIED', message: 'The supplied webhook verification token does not match a configured workspace.', requestId },
+      });
+      return;
+    }
+
+    res.status(200).type('text/plain').send(challenge);
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_UNAVAILABLE')
+      : 'DATABASE_UNAVAILABLE';
+    console.error('[WhatsApp Webhook] Challenge verification failed', { requestId, errorCode });
+    res.status(503).json({
+      success: false,
+      error: { code: 'WEBHOOK_VERIFICATION_UNAVAILABLE', message: 'Webhook verification is unavailable until the database is healthy.', requestId },
+    });
+  }
 });
 
-// 4. POST /api/whatsapp/webhook - Inbound Event Processing & Deduplication
+// 4. POST /api/whatsapp/webhook - Verify provider signature before processing events.
 router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
-  const targetTenantId = (req.headers['x-tenant-id'] as string) || 'tenant_bring_my_bite';
-  const tenantId = toDbTenantId(targetTenantId);
-  const signature = (req.headers['x-hub-signature-256'] as string) || '';
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    sendWhatsAppUnavailable(res, req.requestId || 'req_unknown', 'ENCRYPTION_KEY_MISSING', 'Webhook verification is disabled until a unique persistent ENCRYPTION_KEY is configured.');
+    return;
+  }
+
+  const requestId = req.requestId || 'req_unknown';
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  const signature = typeof req.headers['x-hub-signature-256'] === 'string'
+    ? req.headers['x-hub-signature-256']
+    : undefined;
+  const phoneNumberId = getMetaPhoneNumberId(req.body);
+
+  if (!rawBody || !signature || !phoneNumberId) {
+    res.status(401).json({
+      success: false,
+      error: { code: 'WEBHOOK_SIGNATURE_REQUIRED', message: 'A valid signed Meta webhook with one configured phone-number ID is required.', requestId },
+    });
+    return;
+  }
+
+  let matchedTenantId: string | null = null;
+  try {
+    const result = await pool.query<{ tenant_id: string; config_data: any }>(
+      `SELECT tenant_id, config_data
+       FROM tenant_settings
+       WHERE category = 'whatsapp'
+         AND config_data->>'phoneNumberId' = $1
+       LIMIT 2;`,
+      [phoneNumberId],
+    );
+    if (result.rows.length !== 1) {
+      res.status(401).json({
+        success: false,
+        error: { code: 'WEBHOOK_WORKSPACE_NOT_CONFIGURED', message: 'No unique workspace configuration matches this Meta phone number.', requestId },
+      });
+      return;
+    }
+
+    const row = result.rows[0];
+    const config = typeof row.config_data === 'string' ? JSON.parse(row.config_data) : row.config_data;
+    const appSecret = config?.appSecret ? decryptSecret(String(config.appSecret)) : '';
+    if (!appSecret || !verifyMetaWebhookSignature(rawBody, signature, appSecret)) {
+      res.status(401).json({
+        success: false,
+        error: { code: 'WEBHOOK_SIGNATURE_INVALID', message: 'The Meta webhook signature is missing or invalid.', requestId },
+      });
+      return;
+    }
+    matchedTenantId = row.tenant_id;
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_UNAVAILABLE')
+      : 'DATABASE_UNAVAILABLE';
+    console.error('[WhatsApp Webhook] Signature verification failed', { requestId, errorCode });
+    res.status(503).json({
+      success: false,
+      error: { code: 'WEBHOOK_VERIFICATION_UNAVAILABLE', message: 'Webhook verification is unavailable until the database is healthy.', requestId },
+    });
+    return;
+  }
 
   const adapter = getWhatsAppAdapter('cloud_api');
   const events = adapter.parseWebhookEvent(req.body);
-
   if (events.length === 0) {
-    // Ack immediately to WhatsApp provider to prevent webhook retries
-    res.status(200).json({ success: true, processed: 0 });
+    res.status(200).json({ success: true, processed: 0, requestId });
     return;
   }
 
-  const dbConfig = resolveDatabaseConfig();
+  // Resolve ownership only from the workspace configuration whose app secret
+  // verified the exact request body. Ignore caller-controlled tenant headers.
+  const tenantId = matchedTenantId!;
+  let processed = 0;
 
   for (const event of events) {
-    if (dbConfig.isBlocked) {
-      // In-memory deduplication check
-      const duplicate = IN_MEMORY_MESSAGES.find(m => m.providerMessageId === event.providerMessageId);
-      if (!duplicate && event.body) {
-        IN_MEMORY_MESSAGES.push({
-          id: `w-msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          tenantId: targetTenantId,
-          senderPhone: event.senderPhone,
-          recipientPhone: event.recipientPhone,
-          direction: 'inbound',
-          messageType: event.messageType,
-          body: event.body,
-          status: 'read',
-          providerMessageId: event.providerMessageId,
-          aiGenerated: false,
-          createdAt: event.timestamp.toISOString(),
-        });
-      }
+    if (!event.providerMessageId || !event.providerMessageId.trim()) {
+      console.warn('[WhatsApp Webhook] Skipping provider event without an ID', { requestId });
       continue;
     }
 
     try {
-      // PostgreSQL idempotent insert with ON CONFLICT DO NOTHING
+      if (event.statusUpdate) {
+        const statusResult = await pool.query(
+          `UPDATE whatsapp_messages
+           SET status = $1::varchar(50),
+               error_message = CASE WHEN $1::varchar(50) = 'failed' THEN 'Meta reported message delivery failure.' ELSE NULL END
+           WHERE tenant_id = $2
+             AND provider_message_id = $3
+             AND direction = 'outbound'
+           RETURNING id;`,
+          [event.statusUpdate, tenantId, event.providerMessageId],
+        );
+        // A status callback can race the send response that records Meta's
+        // provider ID. Ask Meta to retry rather than silently losing the update.
+        if (statusResult.rowCount === 0) {
+          // Status notifications can also refer to messages sent outside this
+          // CRM, or arrive before provider_message_id is persisted. Do not ask
+          // Meta to retry indefinitely for an event this tenant cannot match.
+          console.warn('[WhatsApp Webhook] Unmatched provider status acknowledged', {
+            requestId,
+            status: event.statusUpdate,
+          });
+          continue;
+        }
+        processed += 1;
+        continue;
+      }
+
+      const senderDigits = event.senderPhone.replace(/\D/g, '');
+      let leadId: string | null = null;
+      let contactId: string | null = null;
+
+      const leadResult = await pool.query<{ id: string }>(
+        `SELECT id
+         FROM leads
+         WHERE tenant_id = $1
+           AND regexp_replace(phone_normalized, '[^0-9]', '', 'g') = $2
+         ORDER BY created_at DESC
+         LIMIT 1;`,
+        [tenantId, senderDigits],
+      );
+      leadId = leadResult.rows[0]?.id || null;
+
+      if (!leadId) {
+        const contactResult = await pool.query<{ id: string }>(
+          `SELECT id
+           FROM contacts
+           WHERE tenant_id = $1
+             AND regexp_replace(phone_normalized, '[^0-9]', '', 'g') = $2
+         ORDER BY created_at DESC
+         LIMIT 1;`,
+          [tenantId, senderDigits],
+        );
+        contactId = contactResult.rows[0]?.id || null;
+      }
+
       await pool.query(
         `INSERT INTO whatsapp_messages (
-           tenant_id, sender_phone, recipient_phone, direction, message_type, body, status, provider_message_id, created_at
-         ) VALUES ($1, $2, $3, 'inbound', $4, $5, 'read', $6, $7)
+           tenant_id, lead_id, contact_id, sender_phone, recipient_phone, direction,
+           message_type, body, status, provider_message_id, idempotency_key, created_at
+         ) VALUES ($1, $2, $3, $4, $5, 'inbound', $6, $7, 'received', $8, $8, $9)
          ON CONFLICT (tenant_id, idempotency_key) DO NOTHING;`,
         [
           tenantId,
+          leadId,
+          contactId,
           event.senderPhone,
           event.recipientPhone,
           event.messageType,
           event.body,
           event.providerMessageId,
           event.timestamp,
-        ]
-      ).catch(() => {});
-    } catch {
-      // Ignore webhook processing failures to maintain 200 response
+        ],
+      );
+      processed += 1;
+    } catch (error) {
+      const errorCode = error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+        : 'DATABASE_ERROR';
+      console.error('[WhatsApp Webhook] Event persistence failed', { requestId, errorCode });
+      res.status(503).json({
+        success: false,
+        error: { code: 'WEBHOOK_PERSISTENCE_FAILED', message: 'The webhook event was not fully persisted; retry delivery.', requestId },
+      });
+      return;
     }
   }
 
-  res.status(200).json({ success: true, processed: events.length });
+  res.status(200).json({ success: true, processed, requestId });
 });
 
 // 5. GET /api/whatsapp/messages - Fetch Conversation Messages & Threads
@@ -337,14 +601,12 @@ router.get('/messages', requireAuth, requireTenant(), async (req: Request, res: 
     const params: any[] = [tenantId];
     let whereSql = 'tenant_id = $1';
 
-    if (phone && typeof phone === 'string') {
-      params.push(phone);
-      whereSql += ` AND (sender_phone = $${params.length} OR recipient_phone = $${params.length})`;
-    }
-
     if (leadId && typeof leadId === 'string') {
       params.push(leadId);
       whereSql += ` AND lead_id::text = $${params.length}`;
+    } else if (phone && typeof phone === 'string') {
+      params.push(phone);
+      whereSql += ` AND (sender_phone = $${params.length} OR recipient_phone = $${params.length})`;
     }
 
     const result = await pool.query(
@@ -362,57 +624,423 @@ router.get('/messages', requireAuth, requireTenant(), async (req: Request, res: 
 
     res.json({ success: true, data: result.rows, meta: { totalCount: result.rows.length, requestId } });
   } catch (error: any) {
-    const filtered = IN_MEMORY_MESSAGES.filter(m => m.tenantId === rawTenantId || m.tenantId === tenantId);
-    res.json({ success: true, data: filtered, meta: { totalCount: filtered.length, requestId } });
+    if (isTestRuntime() && resolveDatabaseConfig().isBlocked) {
+      const filtered = IN_MEMORY_MESSAGES.filter(m => m.tenantId === rawTenantId || m.tenantId === tenantId);
+      res.json({ success: true, data: filtered, meta: { totalCount: filtered.length, requestId } });
+      return;
+    }
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[WhatsApp Messages] Read failed', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_MESSAGES_UNAVAILABLE', 'WhatsApp messages could not be loaded from persistent storage.');
   }
 });
 
-// 6. POST /api/whatsapp/messages - Dispatch Outbound Message
-router.post('/messages', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
-  const tenantId = toDbTenantId(req.tenantContext!.tenantId);
-  const rawTenantId = req.tenantContext!.tenantId;
+// 6. POST /api/whatsapp/messages - Policy-checked, idempotent outbound dispatch.
+router.post('/messages', requireAuth, requireTenant(['Admin', 'Sales Manager', 'Sales Executive']), async (req: Request, res: Response): Promise<void> => {
+  const tenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
-  const { recipientPhone, body, templateName, templateParameters, leadId, idempotencyKey } = req.body;
+  const {
+    recipientPhone,
+    body,
+    templateName,
+    templateLanguage,
+    templateParameters,
+    leadId,
+    idempotencyKey,
+  } = req.body || {};
 
-  if (!recipientPhone || !recipientPhone.trim()) {
+  if (typeof recipientPhone !== 'string' || !recipientPhone.trim()) {
     res.status(400).json({
       success: false,
       error: { code: 'VALIDATION_ERROR', message: 'Recipient phone number is required.', requestId },
     });
     return;
   }
-
-  if (!body && !templateName) {
+  const normalizedRecipient = normalizeWhatsAppPhone(recipientPhone);
+  if (!normalizedRecipient) {
     res.status(400).json({
       success: false,
-      error: { code: 'VALIDATION_ERROR', message: 'Message body or template name is required.', requestId },
+      error: { code: 'INVALID_RECIPIENT_PHONE', message: 'Enter a valid recipient phone number.', requestId },
+    });
+    return;
+  }
+  const hasTemplate = typeof templateName === 'string' && templateName.trim().length > 0;
+  const messageBody = typeof body === 'string' ? body.trim() : '';
+  if (!hasTemplate && !messageBody) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Message body or approved template name is required.', requestId },
+    });
+    return;
+  }
+  if (typeof leadId !== 'string' || !leadId.trim()) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'LEAD_REQUIRED', message: 'Select a CRM lead before sending a WhatsApp message.', requestId },
+    });
+    return;
+  }
+  if (typeof idempotencyKey !== 'string' || idempotencyKey.trim().length < 8 || idempotencyKey.trim().length > 255) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'A unique idempotency key is required to prevent duplicate message sends.', requestId },
     });
     return;
   }
 
-  // Load tenant provider config
-  const rawConfig = IN_MEMORY_SETTINGS[rawTenantId] || {
-    provider: 'cloud_api',
-    phoneNumberId: '109823475689123',
-    accessToken: 'test_token_123',
-  };
+  const stableKey = idempotencyKey.trim();
+  const requestHash = crypto.createHash('sha256').update(JSON.stringify({
+    leadId: leadId.trim(),
+    recipientPhone: normalizedRecipient,
+    messageType: hasTemplate ? 'template' : 'text',
+    body: hasTemplate ? '' : messageBody,
+    templateName: hasTemplate ? templateName.trim() : '',
+    templateLanguage: hasTemplate ? (typeof templateLanguage === 'string' ? templateLanguage.trim() : '') : '',
+    templateParameters: hasTemplate && Array.isArray(templateParameters) ? templateParameters : [],
+  })).digest('hex');
 
-  const adapter = getWhatsAppAdapter(rawConfig.provider);
+  // Idempotency is checked before any provider call. A duplicate click/retry may
+  // return the original result, but must never dispatch a second provider message.
+  try {
+    const existingResult = await pool.query(
+      `SELECT id, tenant_id as "tenantId", lead_id as "leadId", sender_phone as "senderPhone",
+              recipient_phone as "recipientPhone", direction, message_type as "messageType",
+              body, status, provider_message_id as "providerMessageId",
+              idempotency_request_hash as "idempotencyRequestHash", created_at as "createdAt"
+       FROM whatsapp_messages
+       WHERE tenant_id = $1 AND idempotency_key = $2
+       LIMIT 1;`,
+      [tenantId, stableKey],
+    );
+    if (existingResult.rows.length) {
+      sendExistingMessage(res, existingResult.rows[0], requestId, requestHash);
+      return;
+    }
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[WhatsApp Messages] Idempotency lookup failed', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_STORAGE_UNAVAILABLE', 'Message history could not be checked safely. No message was sent.');
+    return;
+  }
 
-  // Send message through provider adapter
-  const sendResult = await adapter.sendMessage({
-    tenantId,
-    recipientPhone: recipientPhone.trim(),
-    messageType: templateName ? 'template' : 'text',
-    body: body || `Template: ${templateName}`,
-    templateName,
-    templateParameters,
-    idempotencyKey,
-    leadId,
-    credentials: rawConfig,
-  });
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    sendWhatsAppUnavailable(res, requestId, 'ENCRYPTION_KEY_MISSING', 'Outbound messages are disabled until a secure persistent ENCRYPTION_KEY is configured and provider credentials are re-verified.');
+    return;
+  }
+
+  // Require a real, persisted workspace provider configuration.
+  let rawConfig: any = null;
+  try {
+    rawConfig = await loadTenantWhatsAppConfig(tenantId);
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_UNAVAILABLE')
+      : 'DATABASE_UNAVAILABLE';
+    console.error('[WhatsApp Messages] Provider configuration lookup failed', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_CONFIG_UNAVAILABLE', 'Saved provider configuration could not be loaded. No message was sent.');
+    return;
+  }
+  if (!rawConfig || rawConfig.status !== 'connected') {
+    res.status(409).json({
+      success: false,
+      error: { code: 'WHATSAPP_NOT_CONFIGURED', message: 'Configure and verify an actual WhatsApp provider before sending messages.', requestId },
+    });
+    return;
+  }
+
+  let adapter;
+  try {
+    adapter = getWhatsAppAdapter(rawConfig.provider);
+  } catch {
+    res.status(409).json({
+      success: false,
+      error: { code: 'WHATSAPP_PROVIDER_UNSUPPORTED', message: 'This WhatsApp provider is not implemented in the current release.', requestId },
+    });
+    return;
+  }
+
+  // Validate the target lead and explicit consent on the server; the UI is not
+  // a trust boundary. Historical rows without evidence require re-confirmation.
+  let lead: any;
+  try {
+    const leadResult = await pool.query(
+      `SELECT id, phone_normalized as "phoneNormalized", consent_status as "consentStatus",
+              consent_source as "consentSource", consent_recorded_at as "consentRecordedAt",
+              opted_out_at as "optedOutAt"
+       FROM leads
+       WHERE tenant_id = $1 AND id::text = $2
+       LIMIT 1;`,
+      [tenantId, leadId.trim()],
+    );
+    lead = leadResult.rows[0];
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[WhatsApp Messages] Lead eligibility lookup failed', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_ELIGIBILITY_UNAVAILABLE', 'Lead consent could not be verified. No message was sent.');
+    return;
+  }
+  if (!lead) {
+    res.status(404).json({
+      success: false,
+      error: { code: 'LEAD_NOT_FOUND', message: 'The selected lead was not found in this workspace.', requestId },
+    });
+    return;
+  }
+  if (normalizeWhatsAppPhone(lead.phoneNormalized) !== normalizedRecipient) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'RECIPIENT_LEAD_MISMATCH', message: 'The recipient number does not match the selected CRM lead.', requestId },
+    });
+    return;
+  }
+  if (lead.consentStatus !== 'Consented' || !lead.consentSource || !lead.consentRecordedAt || lead.optedOutAt) {
+    res.status(403).json({
+      success: false,
+      error: { code: 'WHATSAPP_CONSENT_REQUIRED', message: 'Explicit, recorded WhatsApp consent is required and the lead must not have opted out.', requestId },
+    });
+    return;
+  }
+
+  let effectiveTemplateLanguage = typeof templateLanguage === 'string' ? templateLanguage.trim() : '';
+  let persistedBody = messageBody;
+  if (hasTemplate) {
+    if (rawConfig.provider !== 'cloud_api') {
+      res.status(409).json({
+        success: false,
+        error: { code: 'WHATSAPP_TEMPLATE_PROVIDER_UNSUPPORTED', message: 'Approved template lookup is implemented only for the Meta Cloud API in this release.', requestId },
+      });
+      return;
+    }
+
+    let selectedTemplate: any = null;
+    if (isTestRuntime()) {
+      selectedTemplate = PREDEFINED_TEMPLATES.find((template) =>
+        template.name === templateName.trim() &&
+        (!effectiveTemplateLanguage || template.language === effectiveTemplateLanguage),
+      ) || null;
+    } else {
+      if (!rawConfig.businessAccountId || !rawConfig.accessToken) {
+        res.status(409).json({
+          success: false,
+          error: { code: 'WHATSAPP_TEMPLATES_NOT_CONFIGURED', message: 'Verified Meta business account credentials are required to verify this template.', requestId },
+        });
+        return;
+      }
+      try {
+        const endpoint = new URL(`https://graph.facebook.com/${getMetaGraphApiVersion()}/${encodeURIComponent(rawConfig.businessAccountId)}/message_templates`);
+        endpoint.searchParams.set('fields', 'name,status,language,category,components');
+        endpoint.searchParams.set('name', templateName.trim());
+        endpoint.searchParams.set('limit', '100');
+        const response = await fetch(endpoint.toString(), {
+          headers: { Authorization: `Bearer ${rawConfig.accessToken}` },
+          signal: AbortSignal.timeout(8000),
+        });
+        const payload = await response.json().catch(() => ({} as any));
+        if (!response.ok || payload.error) {
+          const upstreamStatus = response.status;
+          console.error('[WhatsApp Messages] Template verification failed', { requestId, upstreamStatus, code: payload.error?.code });
+          res.status(502).json({
+            success: false,
+            error: { code: 'META_TEMPLATE_VERIFICATION_FAILED', message: payload.error?.message || `Meta template verification failed (HTTP ${upstreamStatus}). No message was sent.`, requestId },
+          });
+          return;
+        }
+        const templates = Array.isArray(payload.data) ? payload.data : [];
+        selectedTemplate = templates.find((template: any) =>
+          template.name === templateName.trim() &&
+          template.status === 'APPROVED' &&
+          (!effectiveTemplateLanguage || template.language === effectiveTemplateLanguage),
+        ) || null;
+      } catch (error) {
+        const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+        res.status(502).json({
+          success: false,
+          error: { code: 'META_TEMPLATE_VERIFICATION_FAILED', message: timedOut ? 'Meta template verification timed out. No message was sent.' : 'Meta template verification is unavailable. No message was sent.', requestId },
+        });
+        return;
+      }
+    }
+
+    if (!selectedTemplate || selectedTemplate.status !== 'APPROVED') {
+      res.status(409).json({
+        success: false,
+        error: { code: 'WHATSAPP_TEMPLATE_NOT_APPROVED', message: 'Only an approved template from the configured provider can be sent.', requestId },
+      });
+      return;
+    }
+    effectiveTemplateLanguage = effectiveTemplateLanguage || selectedTemplate.language || 'en';
+    if (!isTestRuntime()) {
+      const headerComponent = Array.isArray(selectedTemplate.components)
+        ? selectedTemplate.components.find((component: any) => component.type === 'HEADER')
+        : undefined;
+      const headerHasVariables = typeof headerComponent?.text === 'string' &&
+        /\{\{\d+\}\}/.test(headerComponent.text);
+      if (headerHasVariables || (headerComponent?.format && headerComponent.format !== 'TEXT')) {
+        res.status(409).json({
+          success: false,
+          error: { code: 'WHATSAPP_TEMPLATE_HEADER_UNSUPPORTED', message: 'This approved template uses header parameters or media not supported by the current sender. Choose a compatible text-header template.', requestId },
+        });
+        return;
+      }
+      const templateComponents = Array.isArray(selectedTemplate.components) ? selectedTemplate.components : [];
+      const bodyComponent = templateComponents.find((component: any) => component.type === 'BODY');
+      const placeholders = typeof bodyComponent?.text === 'string'
+        ? (bodyComponent.text.match(/\{\{\d+\}\}/g) || []).length
+        : 0;
+      const parameters = Array.isArray(templateParameters) ? templateParameters : [];
+      const buttons = templateComponents.find((component: any) => component.type === 'BUTTONS')?.buttons || [];
+      const hasDynamicButtonParameters = buttons.some((button: any) =>
+        (typeof button?.url === 'string' && /\{\{\d+\}\}/.test(button.url)) ||
+        (Array.isArray(button?.example) && button.example.length > 0)
+      );
+      if (hasDynamicButtonParameters) {
+        res.status(409).json({
+          success: false,
+          error: { code: 'WHATSAPP_TEMPLATE_BUTTON_PARAMETERS_UNSUPPORTED', message: 'This template has dynamic button parameters not supported by the current sender. Choose a compatible approved template.', requestId },
+        });
+        return;
+      }
+      if (parameters.length !== placeholders || parameters.some((value: unknown) => typeof value !== 'string' || !value.trim())) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'WHATSAPP_TEMPLATE_PARAMETERS_MISMATCH', message: `The approved template requires ${placeholders} non-empty body parameter(s), but ${parameters.length} were provided.`, requestId },
+        });
+        return;
+      }
+    }
+    persistedBody = `[Template: ${templateName.trim()}]`;
+  } else {
+    // WhatsApp customer-service free-form messages are only allowed within
+    // 24 hours of the customer's last inbound message.
+    try {
+      const senderDigits = normalizedRecipient.replace(/\D/g, '');
+      const inboundResult = await pool.query(
+        `SELECT created_at
+         FROM whatsapp_messages
+         WHERE tenant_id = $1
+           AND direction = 'inbound'
+           AND (
+             lead_id = $2
+             OR (
+               lead_id IS NULL
+               AND regexp_replace(sender_phone, '[^0-9]', '', 'g') = $3
+             )
+           )
+         ORDER BY created_at DESC
+         LIMIT 1;`,
+        [tenantId, lead.id, senderDigits],
+      );
+      const lastInboundAt = inboundResult.rows[0]?.created_at
+        ? new Date(inboundResult.rows[0].created_at).getTime()
+        : Number.NaN;
+      const ageMs = Date.now() - lastInboundAt;
+      if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs >= 24 * 60 * 60 * 1000) {
+        res.status(409).json({
+          success: false,
+          error: { code: 'WHATSAPP_TEMPLATE_REQUIRED', message: 'The 24-hour customer-service window is not open. Choose an approved template instead; no message was sent.', requestId },
+        });
+        return;
+      }
+    } catch (error) {
+      const errorCode = error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+        : 'DATABASE_ERROR';
+      console.error('[WhatsApp Messages] Customer-service window lookup failed', { requestId, errorCode });
+      sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_WINDOW_UNAVAILABLE', 'The customer-service window could not be verified. No message was sent.');
+      return;
+    }
+  }
+
+  const finalTemplateParameters = hasTemplate && Array.isArray(templateParameters)
+    ? templateParameters.filter((value: unknown): value is string => typeof value === 'string')
+    : undefined;
+
+  // Persist intent before calling the provider. If a timeout occurs after Meta
+  // accepts a message, retrying with this key returns the stored row and cannot
+  // accidentally dispatch a second message.
+  let queued: any;
+  try {
+    const inserted = await pool.query(
+      `INSERT INTO whatsapp_messages (
+         tenant_id, lead_id, sender_phone, recipient_phone, direction, message_type,
+         body, status, idempotency_key, idempotency_request_hash, created_at
+       ) VALUES ($1, $2, $3, $4, 'outbound', $5, $6, 'queued', $7, $8, NOW())
+       ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+       RETURNING id, tenant_id as "tenantId", lead_id as "leadId", sender_phone as "senderPhone",
+                 recipient_phone as "recipientPhone", direction, message_type as "messageType",
+                 body, status, provider_message_id as "providerMessageId",
+                 idempotency_request_hash as "idempotencyRequestHash", created_at as "createdAt";`,
+      [
+        tenantId,
+        lead.id,
+        rawConfig.displayPhoneNumber || rawConfig.sourceNumber || '',
+        normalizedRecipient,
+        hasTemplate ? 'template' : 'text',
+        persistedBody,
+        stableKey,
+        requestHash,
+      ],
+    );
+    queued = inserted.rows[0] || null;
+    if (!queued) {
+      const existingResult = await pool.query(
+        `SELECT id, tenant_id as "tenantId", lead_id as "leadId", sender_phone as "senderPhone",
+                recipient_phone as "recipientPhone", direction, message_type as "messageType",
+                body, status, provider_message_id as "providerMessageId",
+                idempotency_request_hash as "idempotencyRequestHash", created_at as "createdAt"
+         FROM whatsapp_messages
+         WHERE tenant_id = $1 AND idempotency_key = $2
+         LIMIT 1;`,
+        [tenantId, stableKey],
+      );
+      sendExistingMessage(res, existingResult.rows[0], requestId, requestHash);
+      return;
+    }
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[WhatsApp Messages] Queue persistence failed', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_QUEUE_FAILED', 'The message could not be safely queued. No message was sent.');
+    return;
+  }
+
+  let sendResult;
+  try {
+    sendResult = await adapter.sendMessage({
+      tenantId,
+      recipientPhone: normalizedRecipient,
+      messageType: hasTemplate ? 'template' : 'text',
+      body: messageBody || `Template: ${templateName}`,
+      templateName: hasTemplate ? templateName.trim() : undefined,
+      templateLanguage: hasTemplate ? effectiveTemplateLanguage : undefined,
+      templateParameters: finalTemplateParameters,
+      idempotencyKey: stableKey,
+      leadId: lead.id,
+      credentials: rawConfig,
+    });
+  } catch (error) {
+    console.error('[WhatsApp Messages] Provider adapter threw unexpectedly', { requestId });
+    sendResult = { success: false, status: 'failed' as const, error: 'WhatsApp provider request failed unexpectedly.' };
+  }
 
   if (!sendResult.success) {
+    try {
+      await pool.query(
+        `UPDATE whatsapp_messages
+         SET status = 'failed', error_message = $1
+         WHERE tenant_id = $2 AND id = $3;`,
+        [(sendResult.error || 'Provider rejected the message.').slice(0, 1000), tenantId, queued.id],
+      );
+    } catch (error) {
+      console.error('[WhatsApp Messages] Failed to persist provider failure status', { requestId });
+    }
     res.status(502).json({
       success: false,
       error: {
@@ -424,69 +1052,96 @@ router.post('/messages', requireAuth, requireTenant(), async (req: Request, res:
     return;
   }
 
-  const newMsg = {
-    id: `w-msg-${Date.now()}`,
-    tenantId: rawTenantId,
-    leadId: leadId || undefined,
-    senderPhone: rawConfig.phoneNumberId ? `+${rawConfig.phoneNumberId}` : '+919999988888',
-    recipientPhone: recipientPhone.trim(),
-    direction: 'outbound',
-    messageType: templateName ? 'template' : 'text',
-    body: body || `[Template: ${templateName}]`,
-    status: sendResult.status,
-    providerMessageId: sendResult.providerMessageId,
-    idempotencyKey: idempotencyKey || undefined,
-    aiGenerated: false,
-    createdAt: new Date().toISOString(),
-  };
+  try {
+    const updated = await pool.query(
+      `UPDATE whatsapp_messages
+       SET status = $1, provider_message_id = $2, error_message = NULL
+       WHERE tenant_id = $3 AND id = $4
+       RETURNING id, tenant_id as "tenantId", lead_id as "leadId", direction,
+                 sender_phone as "senderPhone", recipient_phone as "recipientPhone",
+                 message_type as "messageType", body, status,
+                 provider_message_id as "providerMessageId", created_at as "createdAt";`,
+      [sendResult.status, sendResult.providerMessageId || null, tenantId, queued.id],
+    );
+    if (!updated.rows[0]) {
+      sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_STATUS_PERSIST_FAILED', 'The provider accepted the send request but message status could not be confirmed. Check message history before retrying.');
+      return;
+    }
+    res.status(201).json({ success: true, data: updated.rows[0], meta: { requestId } });
+  } catch (error) {
+    console.error('[WhatsApp Messages] Provider accepted send but status persistence failed', { requestId });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_STATUS_PERSIST_FAILED', 'The provider may have accepted the message but the final status could not be stored. Check message history before retrying.');
+  }
+});
 
-  const dbConfig = resolveDatabaseConfig();
-  if (dbConfig.isBlocked) {
-    IN_MEMORY_MESSAGES.push(newMsg);
-    res.status(201).json({ success: true, data: newMsg, meta: { requestId } });
+// 7. GET /api/whatsapp/templates - Live Meta templates, local samples only in automated tests.
+router.get('/templates', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
+  const tenantId = toDbTenantId(req.tenantContext!.tenantId);
+  const requestId = req.requestId || 'req_unknown';
+
+  if (isTestRuntime()) {
+    res.json({ success: true, data: PREDEFINED_TEMPLATES, meta: { totalCount: PREDEFINED_TEMPLATES.length, requestId, source: 'test-fixture' } });
+    return;
+  }
+
+  let config: any;
+  try {
+    config = await loadTenantWhatsAppConfig(tenantId);
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_UNAVAILABLE')
+      : 'DATABASE_UNAVAILABLE';
+    console.error('[WhatsApp Templates] Config lookup failed', { requestId, errorCode });
+    sendWhatsAppUnavailable(res, requestId, 'WHATSAPP_CONFIG_UNAVAILABLE', 'Saved WhatsApp provider configuration could not be loaded.');
+    return;
+  }
+
+  if (!config || config.status !== 'connected' || config.provider !== 'cloud_api' ||
+      !config.businessAccountId || !config.accessToken) {
+    res.status(409).json({
+      success: false,
+      error: { code: 'WHATSAPP_TEMPLATES_NOT_CONFIGURED', message: 'Verified Meta Cloud API credentials and a WhatsApp Business Account ID are required to load actual templates.', requestId },
+    });
     return;
   }
 
   try {
-    const result = await pool.query(
-      `INSERT INTO whatsapp_messages (
-         tenant_id, lead_id, sender_phone, recipient_phone, direction, message_type,
-         body, status, idempotency_key, provider_message_id, created_at
-       ) VALUES ($1, $2, $3, $4, 'outbound', $5, $6, $7, $8, $9, NOW())
-       RETURNING id, tenant_id as "tenantId", lead_id as "leadId", direction,
-                 sender_phone as "senderPhone", recipient_phone as "recipientPhone",
-                 message_type as "messageType", body, status, provider_message_id as "providerMessageId",
-                 created_at as "createdAt";`,
-      [
-        tenantId,
-        leadId || null,
-        newMsg.senderPhone,
-        newMsg.recipientPhone,
-        newMsg.messageType,
-        newMsg.body,
-        newMsg.status,
-        idempotencyKey || null,
-        sendResult.providerMessageId,
-      ]
-    );
-
-    res.status(201).json({ success: true, data: result.rows[0], meta: { requestId } });
-  } catch (error: any) {
-    if (error.name === 'DatabaseSafetyError') {
-      res.status(503).json({ success: false, error: { code: 'DATABASE_SAFETY_BLOCKED', message: error.message, requestId } });
+    const version = getMetaGraphApiVersion();
+    const endpoint = new URL(`https://graph.facebook.com/${version}/${encodeURIComponent(config.businessAccountId)}/message_templates`);
+    endpoint.searchParams.set('fields', 'name,status,language,category,components');
+    endpoint.searchParams.set('limit', '100');
+    const response = await fetch(endpoint.toString(), {
+      headers: { Authorization: `Bearer ${config.accessToken}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    const payload = await response.json().catch(() => ({} as any));
+    if (!response.ok || payload.error) {
+      const upstreamStatus = response.status;
+      console.error('[WhatsApp Templates] Meta request failed', { requestId, upstreamStatus, code: payload.error?.code });
+      res.status(502).json({
+        success: false,
+        error: { code: 'META_TEMPLATE_FETCH_FAILED', message: payload.error?.message || `Meta template request failed (HTTP ${upstreamStatus}).`, requestId },
+      });
       return;
     }
-    res.status(500).json({ success: false, error: { code: 'DATABASE_ERROR', message: error.message, requestId } });
-  }
-});
 
-// 7. GET /api/whatsapp/templates - Predefined & Approved Templates
-router.get('/templates', requireAuth, requireTenant(), (req: Request, res: Response) => {
-  res.json({
-    success: true,
-    data: PREDEFINED_TEMPLATES,
-    meta: { totalCount: PREDEFINED_TEMPLATES.length, requestId: req.requestId },
-  });
+    const templates = Array.isArray(payload.data) ? payload.data.map((item: any) => ({
+      id: item.id,
+      name: item.name,
+      language: item.language,
+      category: item.category,
+      status: item.status,
+      components: item.components || [],
+    })) : [];
+    res.json({ success: true, data: templates, meta: { totalCount: templates.length, requestId, source: 'meta-cloud-api' } });
+  } catch (error) {
+    const aborted = error instanceof Error && error.name === 'TimeoutError';
+    console.error('[WhatsApp Templates] Fetch failed', { requestId, errorCode: aborted ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_UNAVAILABLE' });
+    res.status(502).json({
+      success: false,
+      error: { code: 'META_TEMPLATE_FETCH_FAILED', message: aborted ? 'Meta template request timed out.' : 'Unable to reach Meta to load templates.', requestId },
+    });
+  }
 });
 
 export default router;

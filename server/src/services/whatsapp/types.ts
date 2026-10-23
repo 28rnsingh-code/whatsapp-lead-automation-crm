@@ -35,6 +35,7 @@ export interface OutboundMessageParams {
   messageType: 'text' | 'template' | 'image' | 'document';
   body: string;
   templateName?: string;
+  templateLanguage?: string;
   templateParameters?: string[];
   idempotencyKey?: string;
   leadId?: string;

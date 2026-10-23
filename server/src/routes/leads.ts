@@ -116,6 +116,9 @@ router.get('/', requireAuth, requireTenant(), async (req: Request, res: Response
          l.next_action as "nextAction",
          l.follow_up_at as "followUpAt",
          l.consent_status as "consentStatus",
+         l.consent_source as "consentSource",
+         l.consent_recorded_at as "consentRecordedAt",
+         l.opted_out_at as "optedOutAt",
          l.notes,
          l.created_at as "createdAt",
          l.updated_at as "updatedAt"
@@ -261,7 +264,7 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
          deal_value_minor_units, currency, next_action, consent_status, notes,
          created_by
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, 'In Review', $9, $10, 'INR', $11, 'Consented', $12, $13
+         $1, $2, $3, $4, $5, $6, $7, $8, 'In Review', $9, $10, 'INR', $11, 'Unknown', $12, $13
        )
        RETURNING *;`,
       [
@@ -320,6 +323,9 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
       currency: created.currency,
       nextAction: created.next_action,
       consentStatus: created.consent_status,
+      consentSource: created.consent_source || undefined,
+      consentRecordedAt: created.consent_recorded_at || undefined,
+      optedOutAt: created.opted_out_at || undefined,
       notes: created.notes || '',
       createdAt: created.created_at,
       updatedAt: created.updated_at,
@@ -392,6 +398,8 @@ router.get('/:id', requireAuth, requireTenant(), async (req: Request, res: Respo
          l.next_action as "nextAction",
          l.follow_up_at as "followUpAt",
          l.consent_status as "consentStatus",
+         l.consent_source as "consentSource",
+         l.consent_recorded_at as "consentRecordedAt",
          l.notes,
          l.created_at as "createdAt",
          l.updated_at as "updatedAt"
@@ -622,6 +630,9 @@ router.patch('/:id', requireAuth, requireTenant(), async (req: Request, res: Res
       currency: updated.currency,
       nextAction: updated.next_action,
       consentStatus: updated.consent_status,
+      consentSource: updated.consent_source || undefined,
+      consentRecordedAt: updated.consent_recorded_at || undefined,
+      optedOutAt: updated.opted_out_at || undefined,
       notes: updated.notes || '',
       createdAt: updated.created_at,
       updatedAt: updated.updated_at,
@@ -644,6 +655,73 @@ router.patch('/:id', requireAuth, requireTenant(), async (req: Request, res: Res
     res.status(500).json({
       success: false,
       error: { code: 'DATABASE_ERROR', message: 'Failed to update lead.', requestId },
+    });
+  }
+});
+
+// Record explicit WhatsApp consent changes. Sending is allowed only when consent evidence is present.
+router.patch('/:id/consent', requireAuth, requireTenant(['Admin', 'Sales Manager', 'Sales Executive']), async (req: Request, res: Response): Promise<void> => {
+  const tenantId = toDbTenantId(req.tenantContext!.tenantId);
+  const leadId = req.params.id;
+  const requestId = req.requestId || 'req_unknown';
+  const { consentStatus, consentSource } = req.body || {};
+  const supportedStatuses = new Set(['Consented', 'Unknown', 'Opted Out']);
+  const supportedSources = new Set(['website_form', 'whatsapp_inbound', 'phone_verbal', 'paper_form', 'email', 'other']);
+
+  if (!supportedStatuses.has(consentStatus)) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Consent status must be Consented, Unknown, or Opted Out.', requestId },
+    });
+    return;
+  }
+  if (consentStatus === 'Consented' && !supportedSources.has(consentSource)) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'CONSENT_EVIDENCE_REQUIRED', message: 'Choose how the customer explicitly granted WhatsApp consent before recording consent.', requestId },
+    });
+    return;
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE leads
+       SET consent_status = $1::varchar(50),
+           consent_source = CASE WHEN $1::varchar(50) = 'Consented' THEN $2 WHEN $1::varchar(50) = 'Opted Out' THEN 'customer_opt_out' ELSE NULL END,
+           consent_recorded_at = CASE WHEN $1::varchar(50) IN ('Consented', 'Opted Out') THEN NOW() ELSE NULL END,
+           opted_out_at = CASE WHEN $1::varchar(50) = 'Opted Out' THEN NOW() WHEN $1::varchar(50) = 'Consented' THEN NULL ELSE opted_out_at END,
+           updated_at = NOW()
+       WHERE id::text = $3 AND tenant_id = $4
+       RETURNING id, consent_status as "consentStatus", consent_source as "consentSource",
+                 consent_recorded_at as "consentRecordedAt", opted_out_at as "optedOutAt"`,
+      [consentStatus, consentStatus === 'Consented' ? consentSource : null, leadId, tenantId],
+    );
+
+    if (!result.rows.length) {
+      res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Lead not found in this workspace.', requestId },
+      });
+      return;
+    }
+
+    await pool.query(
+      `INSERT INTO activities (tenant_id, entity_type, entity_id, activity_type, actor_user_id, summary)
+       VALUES ($1, 'lead', $2, 'whatsapp_consent_updated', $3, $4)`,
+      [tenantId, leadId, toDbUserId(req.userId), `WhatsApp consent status updated to "${consentStatus}".`],
+    ).catch((err) => {
+      console.warn('[Leads API] Consent activity logging skipped:', err.message);
+    });
+
+    res.json({ success: true, data: result.rows[0], meta: { requestId } });
+  } catch (error: any) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[Leads API] Consent update failed', { requestId, errorCode });
+    res.status(500).json({
+      success: false,
+      error: { code: 'CONSENT_UPDATE_FAILED', message: 'WhatsApp consent could not be updated.', requestId },
     });
   }
 });

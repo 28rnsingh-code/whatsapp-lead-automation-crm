@@ -20,6 +20,38 @@ describe('OneClick Automics CRM API Contracts & Envelope', () => {
     expect(res.headers['x-request-id']).toBeDefined();
   });
 
+  it('GET /api/health remains a liveness endpoint independent of database readiness', async () => {
+    const res = await request(app).get('/api/health');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveProperty('status', 'healthy');
+  });
+
+  it('GET /api/ready verifies the database before claiming readiness', async () => {
+    const res = await request(app).get('/api/ready');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('success', true);
+    expect(res.body.data).toHaveProperty('status', 'ready');
+    expect(res.body.data.checks).toHaveProperty('database', 'healthy');
+    expect(res.body.meta).toHaveProperty('requestId');
+  });
+
+  it('GET /api/workspaces returns persisted active memberships for the signed-in account', async () => {
+    const res = await request(app)
+      .get('/api/workspaces')
+      .set('Authorization', `Bearer ${validToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    for (const workspace of res.body.data) {
+      expect(workspace).toHaveProperty('id');
+      expect(workspace).toHaveProperty('name');
+      expect(workspace).toHaveProperty('role');
+      expect(workspace.id).toMatch(/^[0-9a-f-]{36}$/i);
+    }
+  });
+
   it('GET /api/workspaces without auth header should return 401 Unauthenticated', async () => {
     const res = await request(app).get('/api/workspaces');
     expect(res.status).toBe(401);

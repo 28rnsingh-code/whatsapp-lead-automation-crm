@@ -7,24 +7,72 @@ import {
   fetchWhatsAppTemplatesApi,
   fetchLeadsApi,
   generateAiReplyApi,
-  approveAiReplyApi,
   WhatsAppConfigResponse,
   WhatsAppMessageItem,
   GenerateAiReplyResponse,
 } from '../services/api';
 import { Lead } from '../types';
 
+function createIdempotencyKey(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `msg-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function getTemplateBodyText(template: any): string {
+  if (typeof template?.body === 'string') return template.body;
+  const body = Array.isArray(template?.components)
+    ? template.components.find((component: any) => component.type === 'BODY')
+    : undefined;
+  return typeof body?.text === 'string' ? body.text : 'Template body preview unavailable.';
+}
+
+function getTemplateBodyParameterCount(template: any): number {
+  return (getTemplateBodyText(template).match(/\{\{[^{}]+\}\}/g) || []).length;
+}
+
+function getTemplateHeaderParameterCount(template: any): number {
+  if (typeof template?.header === 'string') {
+    return (template.header.match(/\{\{[^{}]+\}\}/g) || []).length;
+  }
+  const header = Array.isArray(template?.components)
+    ? template.components.find((component: any) => component.type === 'HEADER')
+    : undefined;
+  if (!header) return 0;
+  if (header.format && header.format !== 'TEXT') return Number.POSITIVE_INFINITY;
+  return typeof header.text === 'string'
+    ? (header.text.match(/\{\{[^{}]+\}\}/g) || []).length
+    : 0;
+}
+
+function suggestedTemplateParameters(count: number, lead: Lead): string[] {
+  return Array.from({ length: count }, (_, index) => {
+    if (index === 0) return lead.name || '';
+    if (index === 1) return lead.companyName || 'your business';
+    return '';
+  });
+}
+
+
 export const WhatsAppPage: React.FC = () => {
   const [config, setConfig] = useState<WhatsAppConfigResponse | null>(null);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [messages, setMessages] = useState<WhatsAppMessageItem[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState<boolean>(false);
+  const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [messageRefreshKey, setMessageRefreshKey] = useState<number>(0);
   const [templates, setTemplates] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [sending, setSending] = useState<boolean>(false);
   const [inputMessage, setInputMessage] = useState<string>('');
   const [showTemplateModal, setShowTemplateModal] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [textIdempotencyKey, setTextIdempotencyKey] = useState<string | null>(null);
+  const [templateIdempotencyKeys, setTemplateIdempotencyKeys] = useState<Record<string, string>>({});
+  const [templateParametersByName, setTemplateParametersByName] = useState<Record<string, string[]>>({});
+  const [aiReplyIdempotencyKey, setAiReplyIdempotencyKey] = useState<string | null>(null);
 
   // AI Suggestion State
   const [aiSuggestion, setAiSuggestion] = useState<GenerateAiReplyResponse | null>(null);
@@ -62,54 +110,148 @@ export const WhatsAppPage: React.FC = () => {
     loadData();
   }, []);
 
-  // Load messages for currently selected lead
   useEffect(() => {
-    if (!selectedLead) return;
+    // Drafts and in-flight dedupe keys belong to a specific recipient. Never
+    // carry a pending message draft into a different lead's conversation.
+    setInputMessage('');
+    setTextIdempotencyKey(null);
+    setAiSuggestion(null);
+    setAiReplyIdempotencyKey(null);
+  }, [selectedLead?.id]);
+
+  // Load message history for the selected thread. Cancel stale responses
+  // so a slow previous request can never overwrite a more recent selection.
+  useEffect(() => {
+    let cancelled = false;
+    setMessages([]);
+    setMessagesError(null);
+
+    if (!selectedLead) {
+      setMessagesLoading(false);
+      return () => { cancelled = true; };
+    }
+
+    setMessagesLoading(true);
     fetchWhatsAppMessagesApi(selectedLead.phoneRaw, selectedLead.id)
-      .then((msgs) => setMessages(msgs))
-      .catch(() => setMessages([]));
-  }, [selectedLead]);
+      .then((msgs) => {
+        if (cancelled) return;
+        setMessages(msgs);
+        setMessagesError(null);
+      })
+      .catch((error: any) => {
+        if (cancelled) return;
+        setMessages([]);
+        setMessagesError(error instanceof Error ? error.message : 'Unable to load this conversation.');
+      })
+      .finally(() => {
+        if (!cancelled) setMessagesLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [selectedLead?.id, selectedLead?.phoneRaw, messageRefreshKey]);
+
+  const consentIsValid = !!selectedLead &&
+    selectedLead.consentStatus === 'Consented' &&
+    !!selectedLead.consentSource &&
+    !!selectedLead.consentRecordedAt &&
+    !selectedLead.optedOutAt;
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!selectedLead || !inputMessage.trim() || sending) return;
+    if (!consentIsValid) {
+      showToast('Message blocked: record the customer’s explicit WhatsApp consent in Lead Details first.');
+      return;
+    }
+    if (!windowActive) {
+      showToast('The 24-hour customer-service window is closed. Use an approved template instead.');
+      return;
+    }
 
     setSending(true);
     const textToSend = inputMessage.trim();
-    setInputMessage('');
+    const requestKey = textIdempotencyKey || createIdempotencyKey();
+    if (!textIdempotencyKey) setTextIdempotencyKey(requestKey);
 
     try {
       const sentMsg = await sendWhatsAppMessageApi({
         recipientPhone: selectedLead.phoneRaw,
         body: textToSend,
         leadId: selectedLead.id,
+        idempotencyKey: requestKey,
       });
 
-      setMessages((prev) => [...prev, sentMsg]);
-      showToast('Message dispatched to WhatsApp.');
+      setMessages((prev) => [...prev.filter((message) => message.id !== sentMsg.id), sentMsg]);
+      setInputMessage('');
+      setTextIdempotencyKey(null);
+      showToast(sentMsg.status === 'queued'
+        ? 'Message queued; delivery status is still pending.'
+        : `Message accepted by WhatsApp provider (status: ${sentMsg.status}).`);
     } catch (err: any) {
+      // Keep both the typed text and the same key for safe retries. Editing the
+      // message creates a new key, so retries cannot accidentally reuse a key.
       showToast(`Failed to send message: ${err.message}`);
     } finally {
       setSending(false);
     }
   };
 
-  const handleSendTemplate = async (templateName: string) => {
-    if (!selectedLead) return;
+  const handleSendTemplate = async (template: any) => {
+    if (!selectedLead || sending) return;
+    if (!consentIsValid) {
+      showToast('Template blocked: record the customer’s explicit WhatsApp consent in Lead Details first.');
+      return;
+    }
+    if (template?.status !== 'APPROVED') {
+      showToast('This template is not approved by the configured WhatsApp provider.');
+      return;
+    }
+    if (getTemplateHeaderParameterCount(template) > 0) {
+      showToast('This template uses header parameters or media that this release does not support. Choose a compatible approved template.');
+      return;
+    }
+
+    const templateName = String(template.name || '');
+    const templateStateKey = `${selectedLead.id}:${templateName}:${template.language || ''}`;
+    if (!templateName) {
+      showToast('This template has no provider template name and cannot be sent.');
+      return;
+    }
+    const parameterCount = getTemplateBodyParameterCount(template);
+    const initialParameters = suggestedTemplateParameters(parameterCount, selectedLead);
+    const parameters = templateParametersByName[templateStateKey] || initialParameters;
+    if (parameters.length !== parameterCount || parameters.some((parameter) => !parameter.trim())) {
+      showToast(`Fill all ${parameterCount} body parameter(s) before sending this template.`);
+      return;
+    }
+
     setSending(true);
-    setShowTemplateModal(false);
+    const existingKey = templateIdempotencyKeys[templateStateKey];
+    const requestKey = existingKey || createIdempotencyKey();
+    if (!existingKey) setTemplateIdempotencyKeys((prev) => ({ ...prev, [templateStateKey]: requestKey }));
 
     try {
       const sentMsg = await sendWhatsAppMessageApi({
         recipientPhone: selectedLead.phoneRaw,
         templateName,
-        templateParameters: [selectedLead.name, selectedLead.companyName || 'your business'],
+        templateLanguage: typeof template.language === 'string' ? template.language : undefined,
+        templateParameters: parameters,
         leadId: selectedLead.id,
+        idempotencyKey: requestKey,
       });
-
-      setMessages((prev) => [...prev, sentMsg]);
-      showToast(`Template "${templateName}" dispatched successfully.`);
+      setMessages((prev) => [...prev.filter((message) => message.id !== sentMsg.id), sentMsg]);
+      setTemplateIdempotencyKeys((prev) => {
+        const next = { ...prev };
+        delete next[templateStateKey];
+        return next;
+      });
+      setShowTemplateModal(false);
+      showToast(sentMsg.status === 'queued'
+        ? `Template queued; delivery status is pending.`
+        : `Template "${templateName}" accepted by WhatsApp (status: ${sentMsg.status}).`);
     } catch (err: any) {
+      // Retain the key. If provider acceptance is uncertain, retrying must not
+      // create another outbound message.
       showToast(`Failed to dispatch template: ${err.message}`);
     } finally {
       setSending(false);
@@ -121,7 +263,7 @@ export const WhatsAppPage: React.FC = () => {
     const lastInbound = [...messages].reverse().find((m) => m.direction === 'inbound');
     if (!lastInbound) return false;
     const diffHours = (Date.now() - new Date(lastInbound.createdAt).getTime()) / (1000 * 3600);
-    return diffHours < 24;
+    return diffHours >= 0 && diffHours < 24;
   };
 
   const windowActive = is24HourWindowActive();
@@ -141,6 +283,7 @@ export const WhatsAppPage: React.FC = () => {
         companyName: selectedLead.companyName,
       });
       setAiSuggestion(res);
+      setAiReplyIdempotencyKey(null);
       showToast('AI draft generated.');
     } catch (err: any) {
       showToast(`AI generation error: ${err.message}`);
@@ -151,31 +294,31 @@ export const WhatsAppPage: React.FC = () => {
 
   const handleApproveAiReply = async () => {
     if (!selectedLead || !aiSuggestion || sending) return;
+    if (!consentIsValid) {
+      showToast('AI reply blocked: explicit WhatsApp consent must be recorded first.');
+      return;
+    }
+    if (!windowActive) {
+      showToast('The 24-hour window is closed. Use an approved template instead; the AI reply has not been sent.');
+      return;
+    }
+
     setSending(true);
+    const requestKey = aiReplyIdempotencyKey || createIdempotencyKey();
+    if (!aiReplyIdempotencyKey) setAiReplyIdempotencyKey(requestKey);
     try {
-      await approveAiReplyApi({
+      const sentMsg = await sendWhatsAppMessageApi({
         recipientPhone: selectedLead.phoneRaw,
-        replyText: aiSuggestion.replyText,
-        leadId: selectedLead.id,
-      });
-
-      const newMsg: WhatsAppMessageItem = {
-        id: `w-msg-ai-${Date.now()}`,
-        tenantId: selectedLead.tenantId,
-        leadId: selectedLead.id,
-        senderPhone: '+919999988888',
-        recipientPhone: selectedLead.phoneRaw,
-        direction: 'outbound',
-        messageType: 'text',
         body: aiSuggestion.replyText,
-        status: 'sent',
-        aiGenerated: true,
-        createdAt: new Date().toISOString(),
-      };
-
-      setMessages((prev) => [...prev, newMsg]);
+        leadId: selectedLead.id,
+        idempotencyKey: requestKey,
+      });
+      setMessages((prev) => [...prev.filter((message) => message.id !== sentMsg.id), sentMsg]);
       setAiSuggestion(null);
-      showToast('AI reply approved and sent.');
+      setAiReplyIdempotencyKey(null);
+      showToast(sentMsg.status === 'queued'
+        ? 'AI reply queued; delivery status is pending.'
+        : `AI reply accepted by WhatsApp (status: ${sentMsg.status}).`);
     } catch (err: any) {
       showToast(`Approval failed: ${err.message}`);
     } finally {
@@ -240,7 +383,7 @@ export const WhatsAppPage: React.FC = () => {
         gap: '8px'
       }}>
         <div>
-          <strong>🛡️ Provider:</strong> {config?.config.provider === 'cloud_api' ? 'Meta Official Cloud API' : config?.config.provider === 'gupshup' ? 'Gupshup Enterprise' : 'Local Sandbox Adapter'} • Status: <span style={{ fontWeight: 600 }}>{config?.config.status || 'Connected'}</span>
+          <strong>🛡️ Provider:</strong> {config?.config.provider === 'cloud_api' ? 'Meta Official Cloud API' : config?.config.provider === 'gupshup' ? 'Gupshup Enterprise' : config?.config.provider === 'mock' ? 'Local Test Adapter' : 'Not configured'} • Status: <span style={{ fontWeight: 600 }}>{config?.config.status || 'Not configured'}</span>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           <StatusPill
@@ -248,8 +391,8 @@ export const WhatsAppPage: React.FC = () => {
             variant={windowActive ? 'green' : 'amber'}
           />
           <StatusPill
-            label={config?.config.status === 'connected' ? 'Connected' : 'Active'}
-            variant="green"
+            label={config?.config.status === 'connected' ? 'Connected' : config?.config.status === 'error' ? 'Error' : 'Not configured'}
+            variant={config?.config.status === 'connected' ? 'green' : config?.config.status === 'error' ? 'red' : 'amber'}
           />
         </div>
       </div>
@@ -266,11 +409,14 @@ export const WhatsAppPage: React.FC = () => {
             return (
               <div
                 key={lead.id}
-                onClick={() => setSelectedLead(lead)}
+                onClick={() => {
+                  if (!sending) setSelectedLead(lead);
+                }}
+                aria-disabled={sending}
                 style={{
                   padding: '10px 12px',
                   borderRadius: 'var(--radius-md, 8px)',
-                  cursor: 'pointer',
+                  cursor: sending ? 'not-allowed' : 'pointer',
                   background: isSelected ? 'var(--surface-secondary, #f8faff)' : 'var(--surface, #ffffff)',
                   border: isSelected ? '1px solid var(--blue, #155eef)' : '1px solid var(--line, #e1e9f5)',
                   transition: 'all 0.15s ease',
@@ -313,7 +459,7 @@ export const WhatsAppPage: React.FC = () => {
                 <div>
                   <strong style={{ fontSize: '15px' }}>{selectedLead.name}</strong>
                   <small style={{ display: 'block', color: 'var(--text-muted)' }}>
-                    {selectedLead.phoneRaw} • {selectedLead.companyName || 'Individual'} • <span style={{ color: 'var(--green-text, #027a48)' }}>✓ Opt-in Consented</span>
+                    {selectedLead.phoneRaw} • {selectedLead.companyName || 'Individual'} • <span style={{ color: consentIsValid ? 'var(--green-text, #027a48)' : 'var(--red-text, #b42318)' }}>{consentIsValid ? '✓ Consent recorded' : selectedLead.consentStatus === 'Opted Out' || selectedLead.optedOutAt ? 'Opted out — messaging blocked' : 'Consent evidence missing — messaging blocked'}</span>
                   </small>
                 </div>
                 <div>
@@ -334,7 +480,22 @@ export const WhatsAppPage: React.FC = () => {
                 gap: '14px',
                 background: 'var(--surface-secondary, #f8faff)',
               }}>
-                {messages.length > 0 ? (
+                {messagesLoading ? (
+                  <div role="status" style={{ textAlign: 'center', margin: 'auto', color: 'var(--text-muted)', fontSize: '13px' }}>
+                    Loading conversation…
+                  </div>
+                ) : messagesError ? (
+                  <div role="alert" style={{ textAlign: 'center', margin: 'auto', color: 'var(--red-text, #b42318)', fontSize: '13px' }}>
+                    <p>Conversation could not be loaded: {messagesError}</p>
+                    <button
+                      type="button"
+                      className="btn btn-soft"
+                      onClick={() => setMessageRefreshKey((previous) => previous + 1)}
+                    >
+                      Retry loading messages
+                    </button>
+                  </div>
+                ) : messages.length > 0 ? (
                   messages.map((m) => {
                     const isOutbound = m.direction === 'outbound';
                     return (
@@ -361,7 +522,7 @@ export const WhatsAppPage: React.FC = () => {
                           fontSize: '10px',
                         }}>
                           <span>{new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                          {isOutbound && <span>✓✓</span>}
+                          {isOutbound && <span>{m.status}</span>}
                         </div>
                       </div>
                     );
@@ -427,9 +588,14 @@ export const WhatsAppPage: React.FC = () => {
                   </div>
                 )}
 
+                {!consentIsValid && (
+                  <div role="alert" style={{ fontSize: '11px', color: '#b42318', marginBottom: '8px' }}>
+                    WhatsApp sending is blocked until explicit consent evidence is recorded in the lead record and the customer has not opted out.
+                  </div>
+                )}
                 {!windowActive && (
                   <div style={{ fontSize: '11px', color: '#b45309', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <span>⚠️</span> Customer care window closed (&gt;24h since last inbound). Free-form messages may be blocked by Meta policy; use a pre-approved template.
+                    <span>⚠️</span> Customer-service window closed (&gt;24h since the last inbound message). Free-form sends are disabled; choose an approved template.
                   </div>
                 )}
                 <form onSubmit={handleSendMessage} style={{ display: 'flex', gap: '8px' }}>
@@ -438,15 +604,18 @@ export const WhatsAppPage: React.FC = () => {
                     className="input-text"
                     placeholder="Type a WhatsApp message or update…"
                     value={inputMessage}
-                    onChange={(e) => setInputMessage(e.target.value)}
-                    disabled={sending}
+                    onChange={(e) => {
+                      if (e.target.value !== inputMessage) setTextIdempotencyKey(null);
+                      setInputMessage(e.target.value);
+                    }}
+                    disabled={sending || !consentIsValid}
                     style={{ flex: 1, padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--line)' }}
                   />
                   <button
                     type="button"
                     className="btn btn-soft"
                     onClick={handleGenerateAiReply}
-                    disabled={isGeneratingAi}
+                    disabled={isGeneratingAi || !consentIsValid}
                     style={{ padding: '0 10px', color: '#6d28d9', borderColor: '#ddd6fe' }}
                     title="Generate AI response"
                   >
@@ -464,7 +633,7 @@ export const WhatsAppPage: React.FC = () => {
                   <button
                     type="submit"
                     className="btn btn-primary"
-                    disabled={sending || !inputMessage.trim()}
+                    disabled={sending || !inputMessage.trim() || !consentIsValid || !windowActive}
                     style={{ minWidth: '80px' }}
                   >
                     {sending ? 'Sending…' : 'Send →'}
@@ -507,33 +676,81 @@ export const WhatsAppPage: React.FC = () => {
             </p>
 
             <div style={{ display: 'grid', gap: '12px', maxHeight: '360px', overflowY: 'auto' }}>
-              {templates.map((tpl) => (
-                <div
-                  key={tpl.name}
-                  style={{
-                    padding: '14px',
-                    borderRadius: '8px',
-                    border: '1px solid var(--line)',
-                    background: 'var(--surface-secondary)',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                    <strong style={{ fontSize: '13px' }}>{tpl.header || tpl.name}</strong>
-                    <StatusPill label={tpl.status} variant="green" />
-                  </div>
-                  <div style={{ fontSize: '12px', color: 'var(--text)', marginBottom: '10px' }}>
-                    {tpl.body}
-                  </div>
-                  <button
-                    className="btn btn-primary"
-                    style={{ fontSize: '11px', padding: '4px 10px' }}
-                    onClick={() => handleSendTemplate(tpl.name)}
-                    disabled={sending}
+              {templates.length === 0 && (
+                <p role="status" style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                  No template records are available. Refresh the page after configuring the provider, or check the integration error.
+                </p>
+              )}
+              {templates.map((tpl) => {
+                const bodyText = getTemplateBodyText(tpl);
+                const parameterCount = getTemplateBodyParameterCount(tpl);
+                const defaults = selectedLead ? suggestedTemplateParameters(parameterCount, selectedLead) : [];
+                const templateStateKey = `${selectedLead?.id || 'none'}:${tpl.name}:${tpl.language || ''}`;
+                const parameters = templateParametersByName[templateStateKey] || defaults;
+                const approved = tpl.status === 'APPROVED';
+                const unsupportedHeader = getTemplateHeaderParameterCount(tpl) > 0;
+                return (
+                  <div
+                    key={`${tpl.name}-${tpl.language || ''}`}
+                    style={{
+                      padding: '14px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--line)',
+                      background: 'var(--surface-secondary)',
+                    }}
                   >
-                    Send Template to {selectedLead?.name || 'Contact'}
-                  </button>
-                </div>
-              ))}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', gap: '8px' }}>
+                      <strong style={{ fontSize: '13px' }}>{tpl.header || tpl.name}</strong>
+                      <StatusPill
+                        label={tpl.status || 'Status unknown'}
+                        variant={approved ? 'green' : tpl.status === 'REJECTED' ? 'red' : 'amber'}
+                      />
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text)', marginBottom: '8px', whiteSpace: 'pre-wrap' }}>
+                      {bodyText}
+                    </div>
+                    <small style={{ display: 'block', color: 'var(--text-muted)', marginBottom: '10px' }}>
+                      Language: {tpl.language || 'unknown'} • {tpl.category || 'category unknown'}
+                    </small>
+                    {parameterCount > 0 && (
+                      <div style={{ display: 'grid', gap: '8px', marginBottom: '10px' }}>
+                        {Array.from({ length: parameterCount }, (_, index) => (
+                          <div key={index}>
+                            <label htmlFor={`template-${encodeURIComponent(templateStateKey)}-param-${index}`} style={{ display: 'block', fontSize: '11px', fontWeight: 600, marginBottom: '3px' }}>
+                              Body parameter {index + 1}
+                            </label>
+                            <input
+                              id={`template-${encodeURIComponent(templateStateKey)}-param-${index}`}
+                              className="form-control"
+                              value={parameters[index] ?? ''}
+                              onChange={(e) => {
+                                const next = [...parameters];
+                                next[index] = e.target.value;
+                                setTemplateParametersByName((prev) => ({ ...prev, [templateStateKey]: next }));
+                              }}
+                              disabled={sending || !approved}
+                              style={{ width: '100%' }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {unsupportedHeader && (
+                      <p role="alert" style={{ color: '#b42318', fontSize: '11px' }}>
+                        This template uses an unsupported header variable or media. Choose a compatible text-header template.
+                      </p>
+                    )}
+                    <button
+                      className="btn btn-primary"
+                      style={{ fontSize: '11px', padding: '4px 10px' }}
+                      onClick={() => void handleSendTemplate(tpl)}
+                      disabled={sending || !approved || !consentIsValid || unsupportedHeader}
+                    >
+                      {sending ? 'Sending…' : `Send approved template to ${selectedLead?.name || 'Contact'}`}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

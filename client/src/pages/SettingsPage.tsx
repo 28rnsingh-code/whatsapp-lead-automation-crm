@@ -24,6 +24,7 @@ export const SettingsPage: React.FC = () => {
   const [waAccountId, setWaAccountId] = useState<string>('');
   const [waAccessToken, setWaAccessToken] = useState<string>('');
   const [waAppSecret, setWaAppSecret] = useState<string>('');
+  const [waWebhookVerifyToken, setWaWebhookVerifyToken] = useState<string>('');
   const [waSaving, setWaSaving] = useState<boolean>(false);
 
   // AI Auto-Reply Form State
@@ -125,14 +126,16 @@ export const SettingsPage: React.FC = () => {
         businessAccountId: waAccountId,
         accessToken: waAccessToken || undefined,
         appSecret: waAppSecret || undefined,
+        webhookVerifyToken: waWebhookVerifyToken || undefined,
       });
 
       if (res.data?.config) {
         setWaConfig((prev) => (prev ? { ...prev, config: res.data.config } : prev));
       }
-      showToast('WhatsApp provider configuration saved and verified!');
+      showToast('Provider credentials were verified and the configuration was saved.');
       setWaAccessToken('');
       setWaAppSecret('');
+      setWaWebhookVerifyToken('');
     } catch (err: any) {
       showToast(`Error saving WhatsApp config: ${err.message}`);
     } finally {
@@ -268,11 +271,17 @@ export const SettingsPage: React.FC = () => {
             </div>
             {waConfig?.config.status && (
               <StatusPill
-                label={waConfig.config.status === 'connected' ? 'Connected' : 'Unconfigured'}
-                variant={waConfig.config.status === 'connected' ? 'green' : 'amber'}
+                label={waConfig.config.status === 'connected' ? 'Connected' : waConfig.config.status === 'error' ? 'Error' : 'Not configured'}
+                variant={waConfig.config.status === 'connected' ? 'green' : waConfig.config.status === 'error' ? 'red' : 'amber'}
               />
             )}
           </div>
+
+          {waConfig?.config.errorMessage && (
+            <p role="alert" style={{ color: 'var(--red-text, #b42318)', background: 'var(--red-subtle, #fef3f2)', padding: '10px 12px', borderRadius: '8px', fontSize: '12px' }}>
+              {waConfig.config.errorMessage}
+            </p>
+          )}
 
           <form onSubmit={handleSaveWhatsApp} style={{ display: 'grid', gap: '16px', marginTop: '16px' }}>
             <div>
@@ -286,9 +295,9 @@ export const SettingsPage: React.FC = () => {
                 style={{ width: '100%' }}
               >
                 <option value="cloud_api">Meta Official WhatsApp Cloud API (Recommended)</option>
-                <option value="gupshup">Gupshup Enterprise WhatsApp API</option>
-                <option value="twilio">Twilio WhatsApp API</option>
-                <option value="mock">Local Test Mock Adapter (Sandbox)</option>
+                <option value="gupshup" disabled>Gupshup — unavailable until live credentials are verified</option>
+                <option value="twilio" disabled>Twilio — adapter not implemented</option>
+                <option value="mock" disabled={import.meta.env.PROD}>Local Test Mock Adapter (non-production only)</option>
               </select>
             </div>
 
@@ -350,6 +359,23 @@ export const SettingsPage: React.FC = () => {
                 onChange={(e) => setWaAppSecret(e.target.value)}
                 style={{ width: '100%' }}
               />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', fontWeight: 600 }}>
+                Meta Webhook Verify Token
+              </label>
+              <input
+                type="password"
+                className="input-text"
+                placeholder={waConfig?.config.webhookVerifyTokenMasked || 'Enter a private verify token you also configure in Meta…'}
+                value={waWebhookVerifyToken}
+                onChange={(e) => setWaWebhookVerifyToken(e.target.value)}
+                style={{ width: '100%' }}
+              />
+              <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '4px' }}>
+                This token must match the verify token configured in Meta. It is separate from the App Secret used to verify webhook signatures.
+              </small>
             </div>
 
             {waConfig?.webhookUrl && (
@@ -479,7 +505,7 @@ export const SettingsPage: React.FC = () => {
               >
                 <option value="draft_only">Draft Only — Generate AI reply in composer for agent review</option>
                 <option value="approval_before_send">Approval Required — Show Approve & Send button before dispatch</option>
-                <option value="automatic_send">Automatic Send — Directly reply to inbound inquiries (Strict Consent Only)</option>
+                <option value="automatic_send" disabled>Automatic Send — unavailable until inbound automation and safe retry handling are implemented (Strict Consent Only)</option>
                 <option value="disabled">Disabled — Manual agent responses only</option>
               </select>
             </div>
