@@ -126,20 +126,22 @@ describe('Phase 4: Customer-Configurable AI Auto-Reply Tests', () => {
       expect(res.body.data.requiresApproval).toBe(true);
     });
 
-    it('POST /api/ai/approve-reply dispatches approved message', async () => {
+    it('POST /api/ai/approve-reply refuses the legacy mock-send bypass', async () => {
       const res = await request(app)
         .post('/api/ai/approve-reply')
         .set('Authorization', `Bearer ${rohanToken}`)
         .set('x-tenant-id', 'tenant_bring_my_bite')
         .send({
           recipientPhone: '+919876543210',
-          replyText: 'Hello Vikram, our onboarding is completely free for the first 30 days.',
+          replyText: 'This legacy route must not fake-send a message.',
+          leadId: 'does-not-matter',
         });
 
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.data.status).toBe('sent');
+      expect(res.status).toBe(410);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('AI_APPROVAL_ROUTE_DISABLED');
     });
+
 
     it('enforces tenant isolation on AI configs and requests', async () => {
       const resA = await request(app)
