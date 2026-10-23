@@ -1,128 +1,102 @@
-import React, { useState } from 'react';
-import { StatusPill } from '../components/StatusPill';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
+import { createTeamMemberApi, fetchTeamMembersApi, TeamMemberRecord, TeamMembersResponse, updateTeamMemberRoleApi, updateTeamMemberStatusApi } from '../services/api';
+
+const ROLES: TeamMemberRecord['role'][] = ['Admin', 'Sales Manager', 'Sales Executive', 'Read-only'];
 
 export const TeamPage: React.FC = () => {
-  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [inviteRole, setInviteRole] = useState('Sales Executive');
+  const [team, setTeam] = useState<TeamMembersResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState<TeamMemberRecord['role']>('Sales Executive');
+  const [credential, setCredential] = useState<any>(null);
 
-  const members = [
-    { id: '1', name: 'Rohan Singh', email: 'rohan@bringmybite.in', role: 'Admin', status: 'Active', leadsAssigned: 14 },
-    { id: '2', name: 'Riya Singh', email: 'riya@bringmybite.in', role: 'Sales Manager', status: 'Active', leadsAssigned: 42 },
-    { id: '3', name: 'Vivek Arora', email: 'vivek@bringmybite.in', role: 'Sales Executive', status: 'Active', leadsAssigned: 38 },
-    { id: '4', name: 'Ankit Jain', email: 'ankit@bringmybite.in', role: 'Sales Executive', status: 'Active', leadsAssigned: 28 },
-    { id: '5', name: 'Sneha Patel', email: 'sneha@bringmybite.in', role: 'Read-only', status: 'Invited', leadsAssigned: 0 },
-  ];
+  const refresh = useCallback(async () => {
+    setLoading(true); setError('');
+    try { setTeam(await fetchTeamMembersApi()); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to load members.'); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
 
-  return (
-    <div>
-      <div className="page-header">
-        <div>
-          <h1>Team Members & Permissions</h1>
-          <div className="page-header-sub">
-            Manage workspace roles, lead assignment permissions, and member access boundaries.
-          </div>
-        </div>
-        <div className="header-actions">
-          <button className="btn btn-primary" onClick={() => setIsInviteModalOpen(true)}>
-            + Invite Member
-          </button>
-        </div>
-      </div>
+  const addMember = async () => {
+    setSaving(true); setError(''); setNotice(''); setCredential(null);
+    try {
+      const created = await createTeamMemberApi({ email: email.trim(), displayName: name.trim(), role });
+      setCredential(created);
+      setNotice(created.createdNewAccount
+        ? 'Member created. Copy the temporary password below and share securely; no email was sent.'
+        : 'Existing account added. No new password was generated and no email was sent.');
+      setInviteOpen(false); setName(''); setEmail('');
+      await refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Member could not be added.'); }
+    finally { setSaving(false); }
+  };
 
-      <div className="card" style={{ padding: 0 }}>
-        <div className="table-container" style={{ border: 0 }}>
-          <table>
-            <thead>
-              <tr>
-                <th>Member Name</th>
-                <th>Email Address</th>
-                <th>Assigned Role</th>
-                <th>Status</th>
-                <th>Active Leads</th>
-                <th style={{ textAlign: 'right' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {members.map((m) => (
-                <tr key={m.id}>
-                  <td><strong>{m.name}</strong></td>
-                  <td>{m.email}</td>
-                  <td>
-                    <StatusPill
-                      label={m.role}
-                      variant={m.role === 'Admin' ? 'purple' : m.role === 'Sales Manager' ? 'blue' : 'amber'}
-                      dot={false}
-                    />
-                  </td>
-                  <td>
-                    <span style={{ fontSize: '11px', color: m.status === 'Active' ? 'var(--green-text)' : 'var(--amber-text)' }}>
-                      {m.status === 'Active' ? '✓ Active' : '✉ Invited'}
-                    </span>
-                  </td>
-                  <td>{m.leadsAssigned} leads</td>
-                  <td style={{ textAlign: 'right' }}>
-                    <button className="btn btn-soft" style={{ padding: '3px 8px', fontSize: '11px' }}>
-                      Edit Role
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+  const alterRole = async (member: TeamMemberRecord, nextRole: TeamMemberRecord['role']) => {
+    if (member.role === nextRole) return;
+    setSaving(true); setError(''); setNotice('');
+    try { await updateTeamMemberRoleApi(member.userId, nextRole); setNotice('Member role updated.'); await refresh(); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Role update failed.'); }
+    finally { setSaving(false); }
+  };
 
-      {/* Invite Member Modal */}
-      <Modal
-        isOpen={isInviteModalOpen}
-        onClose={() => setIsInviteModalOpen(false)}
-        title="Invite Team Member"
-      >
-        <div style={{ display: 'grid', gap: '14px' }}>
-          <div>
-            <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', fontWeight: 600 }}>Work Email *</label>
-            <input
-              type="email"
-              placeholder="colleague@bringmybite.in"
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              className="form-control"
-              style={{ width: '100%' }}
-            />
-          </div>
-          <div>
-            <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', fontWeight: 600 }}>Assigned Role</label>
-            <select
-              className="select-control"
-              style={{ width: '100%' }}
-              value={inviteRole}
-              onChange={(e) => setInviteRole(e.target.value)}
-            >
-              <option value="Admin">Admin (Full workspace control)</option>
-              <option value="Sales Manager">Sales Manager (Pipeline & team oversight)</option>
-              <option value="Sales Executive">Sales Executive (Manage assigned leads)</option>
-              <option value="Read-only">Read-only (Auditor / Viewer)</option>
-            </select>
-          </div>
-        </div>
-        <div className="modal-footer">
-          <button className="btn" onClick={() => setIsInviteModalOpen(false)}>
-            Cancel
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              alert(`Invitation sent to ${inviteEmail}`);
-              setIsInviteModalOpen(false);
-              setInviteEmail('');
-            }}
-          >
-            Send Invitation
-          </button>
-        </div>
-      </Modal>
+  const toggleStatus = async (member: TeamMemberRecord) => {
+    const status = member.membershipStatus === 'active' ? 'suspended' : 'active';
+    setSaving(true); setError(''); setNotice('');
+    try { await updateTeamMemberStatusApi(member.userId, status); setNotice(`Member access ${status}.`); await refresh(); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Member status update failed.'); }
+    finally { setSaving(false); }
+  };
+
+  const activeCount = team?.members.filter(m => m.membershipStatus === 'active' && m.accountStatus === 'active').length || 0;
+  const copyPassword = async () => {
+    try {
+      await navigator.clipboard.writeText(String(credential.temporaryPassword));
+      setNotice('Temporary password copied. Share it only through a secure channel.');
+    } catch { setError('Clipboard was blocked. Select the temporary password and copy it manually.'); }
+  };
+
+  return <div>
+    <div className="page-header"><div><h1>Team Members & Permissions</h1><div className="page-header-sub">Manage real workspace members, access roles and plan-based seat limits.</div></div>
+      <div className="header-actions"><button className="btn" onClick={() => void refresh()} disabled={loading || saving}>Refresh</button><button className="btn btn-primary" onClick={() => { setError(''); setInviteOpen(true); }} disabled={loading || saving || Boolean(team && team.remainingSeats <= 0)}>+ Add Member</button></div>
     </div>
-  );
+    {team && <div className="card" style={{ padding: 16, marginBottom: 16, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+      <div><strong>{team.planId.toUpperCase()} plan</strong><p style={{ margin: '4px 0 0', color: 'var(--text-muted)', fontSize: 12 }}>Seat limits are enforced by the server.</p></div>
+      <div><strong>{activeCount} / {team.maxMembers} seats used</strong><p style={{ margin: '4px 0 0', color: 'var(--text-muted)', fontSize: 12 }}>{team.remainingSeats} remaining</p></div>
+    </div>}
+    {error && <div role="alert" className="card" style={{ padding: 12, marginBottom: 12, color: 'var(--red-text, #b42318)' }}>{error}</div>}
+    {notice && <div role="status" className="card" style={{ padding: 12, marginBottom: 12, color: 'var(--green-text, #027a48)' }}>{notice}</div>}
+    {credential?.temporaryPassword && <div className="card" style={{ padding: 18, marginBottom: 16 }}>
+      <h3 style={{ marginTop: 0 }}>Temporary password — shown once</h3>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>For {credential.email}. Share through a secure channel. First login requires the member to change it. No email was sent.</p>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}><code style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 10, userSelect: 'all', overflowWrap: 'anywhere' }}>{credential.temporaryPassword}</code><button className="btn btn-primary" onClick={() => void copyPassword()}>Copy password</button><button className="btn" onClick={() => setCredential(null)}>Dismiss</button></div>
+    </div>}
+    <div className="card" style={{ padding: 0 }}>
+      {loading ? <p role="status" style={{ padding: 18, color: 'var(--text-muted)' }}>Loading saved team members…</p> : <div className="table-container" style={{ border: 0 }}><table>
+        <thead><tr><th>Member</th><th>Role</th><th>Status</th><th>Active Leads</th><th>Actions</th></tr></thead>
+        <tbody>{(team?.members || []).map(member => <tr key={member.membershipId}>
+          <td><strong>{member.displayName}</strong><small style={{ display: 'block', color: 'var(--text-muted)' }}>{member.email}</small></td>
+          <td><select aria-label={`Role for ${member.email}`} className="select-control" value={member.role} disabled={saving || (member.role === 'Admin' && activeCount <= 1)} onChange={e => void alterRole(member, e.target.value as TeamMemberRecord['role'])}>{ROLES.map(r => <option key={r} value={r}>{r}</option>)}</select></td>
+          <td><span style={{ color: member.membershipStatus === 'active' ? 'var(--green-text)' : 'var(--amber-text)', fontSize: 12 }}>{member.membershipStatus === 'active' ? '● Active' : 'Suspended'}</span>{member.mustChangePassword && <small style={{ display: 'block', color: 'var(--amber-text)' }}>Must change password</small>}</td>
+          <td>{Number(member.leadsAssigned || 0)}</td>
+          <td><button className="btn btn-soft" disabled={saving || (member.role === 'Admin' && activeCount <= 1)} onClick={() => void toggleStatus(member)} style={{ padding: '5px 8px', fontSize: 11 }}>{member.membershipStatus === 'active' ? 'Suspend' : 'Activate'}</button></td>
+        </tr>)}{team?.members.length === 0 && <tr><td colSpan={5} style={{ textAlign: 'center', padding: 20 }}>No workspace members found.</td></tr>}</tbody>
+      </table></div>}
+    </div>
+    <Modal isOpen={inviteOpen} onClose={() => setInviteOpen(false)} title="Add workspace member">
+      <div style={{ display: 'grid', gap: 14 }}>
+        <label style={{ fontSize: 12, fontWeight: 600 }}>Full name<input className="form-control" value={name} onChange={e => setName(e.target.value)} placeholder="Member name" style={{ width: '100%', marginTop: 5 }} /></label>
+        <label style={{ fontSize: 12, fontWeight: 600 }}>Work email *<input type="email" required className="form-control" value={email} onChange={e => setEmail(e.target.value)} placeholder="colleague@company.com" style={{ width: '100%', marginTop: 5 }} /></label>
+        <label style={{ fontSize: 12, fontWeight: 600 }}>Role<select className="select-control" value={role} onChange={e => setRole(e.target.value as TeamMemberRecord['role'])} style={{ width: '100%', marginTop: 5 }}>{ROLES.filter(r => r !== 'Admin').map(r => <option key={r} value={r}>{r}</option>)}</select></label>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>A new account gets a temporary password that is shown once. Automated email invitation is not configured.</p>
+      </div>
+      <div className="modal-footer"><button className="btn" onClick={() => setInviteOpen(false)} disabled={saving}>Cancel</button><button className="btn btn-primary" onClick={() => void addMember()} disabled={saving || !email.trim()}>{saving ? 'Creating…' : 'Create member'}</button></div>
+    </Modal>
+  </div>;
 };
