@@ -1,7 +1,6 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { app } from '../src/app';
-import { pool } from '../src/db';
 
 const DEMO_TENANT = 'a0000000-0000-0000-0000-000000000003';
 const DEMO_PASSWORD = process.env.PUBLIC_DEMO_PASSWORD || 'demo123';
@@ -11,18 +10,7 @@ async function loginDemo() {
 }
 
 describe('Public demo isolation and usage limits', () => {
-  afterAll(async () => {
-    // The CI runner uses its isolated oneclick_crm_test database. Never clean production here.
-    if (process.env.NODE_ENV === 'test' && process.env.TEST_DATABASE_URL) {
-      await pool.query(
-        `DELETE FROM demo_usage_sessions
-         WHERE tenant_id = $1 AND session_id IN (
-           SELECT session_id FROM demo_usage_sessions WHERE tenant_id = $1
-         )`,
-        [DEMO_TENANT],
-      ).catch(() => undefined);
-    }
-  });
+
 
   it('allows demo / demo123 with a restricted workspace and a two-hour session', async () => {
     const res = await loginDemo();
