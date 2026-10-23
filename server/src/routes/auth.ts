@@ -125,11 +125,15 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response): Pro
     }
 
     const session = await buildSession(account);
+    const suppliedVisitorId = typeof req.body?.demoVisitorId === 'string' ? req.body.demoVisitorId : '';
+    const demoVisitorId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(suppliedVisitorId)
+      ? suppliedVisitorId
+      : crypto.randomUUID();
     const token = signToken({
       userId: account.user_id,
       email: account.email_normalized,
       defaultTenantId: account.tenant_id,
-      ...(isDemoLogin ? { demo: true, demoSessionId: crypto.randomUUID() } : {}),
+      ...(isDemoLogin ? { demo: true, demoSessionId: crypto.randomUUID(), demoVisitorId } : {}),
     }, isDemoLogin ? '2h' : undefined);
 
     res.json({
