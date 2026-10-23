@@ -45,6 +45,15 @@ export async function demoActionQuota(req: Request, res: Response, next: NextFun
 
   if (!payload.demoSessionId || !payload.demoVisitorId || payload.demo !== true || payload.email !== PUBLIC_DEMO_EMAIL) return next();
 
+  // A demo toggle-off revokes already-issued demo sessions immediately, not only at next login.
+  if (process.env.PUBLIC_DEMO_ENABLED === 'false') {
+    res.status(403).json({
+      success: false,
+      error: { code: 'DEMO_DISABLED', message: 'The public demo is temporarily unavailable.', requestId: req.requestId },
+    });
+    return;
+  }
+
   const path = req.path.toLowerCase();
   const requestedTenantId = String(req.headers['x-tenant-id'] || '').trim();
   if (requestedTenantId !== PUBLIC_DEMO_TENANT_ID) {
