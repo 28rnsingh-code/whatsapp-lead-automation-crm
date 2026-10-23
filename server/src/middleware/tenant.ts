@@ -196,6 +196,10 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       return;
     }
 
+    // Downstream route handlers and persistence services must use the canonical UUID
+    // that was resolved above, never a legacy slug carried by an older signed token.
+    req.userId = targetUserId!;
+
     req.tenantContext = {
       tenantId: targetTenantId,
       role: membership.role,
