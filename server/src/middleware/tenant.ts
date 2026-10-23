@@ -17,53 +17,6 @@ declare global {
   }
 }
 
-// In-memory verified membership directory for fallback and isolated test execution
-interface MembershipRecord {
-  tenantId: string;
-  userId: string;
-  role: RoleName;
-  status: 'active' | 'suspended';
-  permissions: string[];
-}
-
-const VERIFIED_MEMBERSHIPS: MembershipRecord[] = [
-  {
-    tenantId: 'tenant_bring_my_bite',
-    userId: 'user_rohan_singh',
-    role: 'Admin',
-    status: 'active',
-    permissions: ['leads:read', 'leads:write', 'leads:delete', 'pipeline:manage', 'reports:view', 'team:manage'],
-  },
-  {
-    tenantId: 'tenant_automics_labs',
-    userId: 'user_rohan_singh',
-    role: 'Sales Executive',
-    status: 'active',
-    permissions: ['leads:read', 'leads:write'],
-  },
-  {
-    tenantId: 'tenant_automics_labs',
-    userId: 'user_other_tenant',
-    role: 'Admin',
-    status: 'active',
-    permissions: ['leads:read', 'leads:write', 'leads:delete'],
-  },
-  {
-    tenantId: 'tenant_bring_my_bite',
-    userId: 'user_riya_singh',
-    role: 'Sales Manager',
-    status: 'active',
-    permissions: ['leads:read', 'leads:write', 'pipeline:manage', 'reports:view'],
-  },
-  {
-    tenantId: 'tenant_bring_my_bite',
-    userId: 'user_suspended_member',
-    role: 'Sales Executive',
-    status: 'suspended',
-    permissions: [],
-  },
-];
-
 /**
  * Tenant Isolation & Membership Verification Middleware.
  * Critical Security Invariant:
@@ -89,7 +42,7 @@ export function requireTenant(allowedRoles?: RoleName[]) {
     }
 
     // 2. Identify the target tenant requested
-    const targetTenantId = (req.headers['x-tenant-id'] as string) || 'tenant_bring_my_bite';
+    const targetTenantId = (req.headers['x-tenant-id'] as string)?.trim();
 
     // Reject reserved or known forbidden tenant identifiers immediately
     if (!targetTenantId || targetTenantId === 'forbidden_tenant') {
@@ -106,42 +59,34 @@ export function requireTenant(allowedRoles?: RoleName[]) {
 
     let membership: { role: RoleName; status: string; permissions: string[] } | null = null;
 
-    // 3. Attempt DB-backed membership lookup if live database connection is active
+    // 3. Membership authorization must come from PostgreSQL only.
     try {
-      if (process.env.DATABASE_URL && process.env.DATABASE_URL !== 'postgresql://postgres:postgres_password@localhost:5432/oneclick_crm') {
-        const result = await pool.query<{ role_name: string; status: string }>(
-          `SELECT r.name as role_name, m.status 
-           FROM memberships m
-           JOIN roles r ON r.id = m.role_id
-           WHERE m.tenant_id = $1 AND m.user_id = $2
-           LIMIT 1`,
-          [targetTenantId, req.userId]
-        );
-        if (result.rows.length > 0) {
-          const row = result.rows[0];
-          membership = {
-            role: row.role_name as RoleName,
-            status: row.status,
-            permissions: ['leads:read', 'leads:write'],
-          };
+      const result = await pool.query<{ role_name: string; status: string; permission_key: string | null }>(
+        `SELECT r.name AS role_name, m.status, rp.permission_key
+         FROM memberships m
+         JOIN roles r ON r.id = m.role_id
+         LEFT JOIN role_permissions rp ON rp.role_id = r.id
+         WHERE m.tenant_id = $1 AND m.user_id = $2`,
+        [targetTenantId, req.userId]
+      );
+      if (result.rows.length > 0) {
+        const row = result.rows[0];
+        membership = {
+          role: row.role_name as RoleName,
+          status: row.status,
+          permissions: result.rows.map(item => item.permission_key).filter((key): key is string => Boolean(key)),
+        };
+        if (membership.permissions.length === 0 && membership.role === 'Admin') {
+          membership.permissions = ['leads:read', 'leads:write', 'leads:delete', 'pipeline:manage', 'reports:view', 'team:manage'];
         }
       }
-    } catch {
-      // If DB is offline, fall back to verified membership directory
-    }
-
-    // Fallback to verified membership directory
-    if (!membership) {
-      const match = VERIFIED_MEMBERSHIPS.find(
-        (m) => m.tenantId === targetTenantId && m.userId === req.userId
-      );
-      if (match) {
-        membership = {
-          role: match.role,
-          status: match.status,
-          permissions: match.permissions,
-        };
-      }
+    } catch (error) {
+      console.error('[Tenant] Membership lookup failed', { requestId, error });
+      res.status(503).json({
+        success: false,
+        error: { code: 'TENANT_AUTH_UNAVAILABLE', message: 'Workspace authorization is temporarily unavailable.', requestId },
+      });
+      return;
     }
 
     // 4. If no valid membership exists, reject with 403 Forbidden
