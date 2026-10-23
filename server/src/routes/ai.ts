@@ -171,12 +171,45 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
     return;
   }
 
+  let effectiveApiKey = typeof apiKey === 'string' && apiKey.trim() ? apiKey.trim() : undefined;
+  if (!effectiveApiKey && provider !== 'mock') {
+    if (isTestFixtureMode()) {
+      const previous = IN_MEMORY_AI_CONFIGS[rawTenantId];
+      if (previous?.provider === provider && previous.apiKey) effectiveApiKey = previous.apiKey;
+    } else {
+      try {
+        const previousResult = await pool.query(
+          `SELECT config_data FROM tenant_settings WHERE tenant_id = $1 AND category = 'ai' LIMIT 1;`,
+          [tenantId],
+        );
+        if (previousResult.rows.length) {
+          const previous = typeof previousResult.rows[0].config_data === 'string'
+            ? JSON.parse(previousResult.rows[0].config_data)
+            : previousResult.rows[0].config_data;
+          if (previous.provider === provider && previous.apiKey) {
+            effectiveApiKey = decryptSecret(String(previous.apiKey));
+          }
+        }
+      } catch (error) {
+        const errorCode = error && typeof error === 'object' && 'code' in error
+          ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+          : 'DATABASE_ERROR';
+        console.error('[AI Config] Existing credential lookup failed', { requestId, errorCode });
+        res.status(503).json({
+          success: false,
+          error: { code: 'AI_CONFIG_UNAVAILABLE', message: 'The existing AI credential could not be retrieved safely. Settings were not changed.', requestId },
+        });
+        return;
+      }
+    }
+  }
+
   let validation: { valid: boolean; error?: string } = { valid: true };
-  if (apiKey) {
-    const keyCheck = await adapter.validateKey(String(apiKey), String(model));
+  if (effectiveApiKey) {
+    const keyCheck = await adapter.validateKey(effectiveApiKey, String(model));
     validation = { valid: keyCheck.valid, error: keyCheck.error };
   } else if (enabled && provider !== 'mock') {
-    validation = { valid: false, error: 'API key is required when enabling external AI providers.' };
+    validation = { valid: false, error: 'A provider API key is required when enabling an external AI provider. The previously saved key is preserved only when the provider remains unchanged.' };
   }
   if (!validation.valid) {
     res.status(400).json({
@@ -188,7 +221,7 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
 
   const newConfig: AiConfig = {
     provider,
-    apiKey,
+    apiKey: effectiveApiKey,
     model,
     mode,
     systemPrompt: systemPrompt || 'You are an intelligent, courteous sales representative.',
@@ -213,7 +246,7 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
   try {
     const encryptedData = {
       ...newConfig,
-      apiKey: apiKey ? encryptSecret(String(apiKey)) : undefined,
+      apiKey: effectiveApiKey ? encryptSecret(effectiveApiKey) : undefined,
     };
     await pool.query(
       `INSERT INTO tenant_settings (tenant_id, category, config_data, updated_at)
