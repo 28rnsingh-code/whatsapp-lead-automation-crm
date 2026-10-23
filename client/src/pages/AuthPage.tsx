@@ -26,6 +26,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
       const data = await res.json();
       if (data.success && data.data?.token) {
         localStorage.setItem('auth_token', data.data.token);
+        localStorage.setItem('is_demo_session', data.data?.demo ? 'true' : 'false');
         const initialTenantId = data.data.session?.tenant?.id;
         if (typeof initialTenantId === 'string' && initialTenantId) {
           localStorage.setItem('active_tenant_id', initialTenantId);
@@ -102,10 +103,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
           <form onSubmit={handleLogin}>
             <div style={{ display: 'grid', gap: '14px' }}>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', fontWeight: 600 }}>Work Email</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', fontWeight: 600 }}>Work Email or Demo Username</label>
                 <input
-                  type="email"
+                  type="text"
                   required
+                  autoComplete="username"
+                  placeholder="Work email or demo"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="form-control"
@@ -128,6 +131,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
                   style={{ width: '100%' }}
                 />
               </div>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0' }}>Public demo access: username <strong>demo</strong>, password <strong>demo123</strong>. Demo changes are isolated, limited to five test actions, and external messages are simulated.</p>
               <button type="submit" disabled={isSubmitting} className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: '6px', opacity: isSubmitting ? 0.7 : 1 }}>
                 {isSubmitting ? 'Signing in…' : 'Sign In to Workspace'}
               </button>
