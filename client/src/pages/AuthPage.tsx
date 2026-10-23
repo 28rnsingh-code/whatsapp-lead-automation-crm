@@ -18,10 +18,23 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
       const apiBase = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
         ? `${configuredApiBase}/api`
         : configuredApiBase;
+      const requestedUsername = email.trim().toLowerCase();
+      let demoVisitorId: string | undefined;
+      if (requestedUsername === 'demo' || requestedUsername === 'demo@oneclick.local') {
+        try {
+          const existingVisitorId = localStorage.getItem('demo_visitor_id') || '';
+          demoVisitorId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(existingVisitorId)
+            ? existingVisitorId
+            : crypto.randomUUID();
+          localStorage.setItem('demo_visitor_id', demoVisitorId);
+        } catch {
+          demoVisitorId = crypto.randomUUID();
+        }
+      }
       const res = await fetch(`${apiBase}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, ...(demoVisitorId ? { demoVisitorId } : {}) }),
       });
       const data = await res.json();
       if (data.success && data.data?.token) {
