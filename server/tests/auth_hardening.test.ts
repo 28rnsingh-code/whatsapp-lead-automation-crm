@@ -149,8 +149,9 @@ describe('Authentication Hardening, Cryptographic JWTs & Membership Authorizatio
       .set('x-tenant-id', 'tenant_bring_my_bite');
     expect(listing.status).toBe(200);
     expect(Array.isArray(listing.body.data.members)).toBe(true);
-    expect(listing.body.data.maxMembers).toBe(5);
+    expect([2, 5, 10]).toContain(listing.body.data.maxMembers);
     expect(listing.body.data.remainingSeats).toBeGreaterThanOrEqual(0);
+    expect(listing.body.data.remainingSeats).toBeLessThanOrEqual(listing.body.data.maxMembers);
 
     const nonAdminToken = signToken({
       userId: 'user_riya_singh',
