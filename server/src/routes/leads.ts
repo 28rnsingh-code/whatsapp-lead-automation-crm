@@ -116,6 +116,8 @@ router.get('/', requireAuth, requireTenant(), async (req: Request, res: Response
          l.next_action as "nextAction",
          l.follow_up_at as "followUpAt",
          l.consent_status as "consentStatus",
+         l.consent_source as "consentSource",
+         l.consent_recorded_at as "consentRecordedAt",
          l.notes,
          l.created_at as "createdAt",
          l.updated_at as "updatedAt"
@@ -261,7 +263,7 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
          deal_value_minor_units, currency, next_action, consent_status, notes,
          created_by
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, 'In Review', $9, $10, 'INR', $11, 'Consented', $12, $13
+         $1, $2, $3, $4, $5, $6, $7, $8, 'In Review', $9, $10, 'INR', $11, 'Unknown', $12, $13
        )
        RETURNING *;`,
       [
@@ -320,6 +322,8 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
       currency: created.currency,
       nextAction: created.next_action,
       consentStatus: created.consent_status,
+      consentSource: created.consent_source || undefined,
+      consentRecordedAt: created.consent_recorded_at || undefined,
       notes: created.notes || '',
       createdAt: created.created_at,
       updatedAt: created.updated_at,
@@ -392,6 +396,8 @@ router.get('/:id', requireAuth, requireTenant(), async (req: Request, res: Respo
          l.next_action as "nextAction",
          l.follow_up_at as "followUpAt",
          l.consent_status as "consentStatus",
+         l.consent_source as "consentSource",
+         l.consent_recorded_at as "consentRecordedAt",
          l.notes,
          l.created_at as "createdAt",
          l.updated_at as "updatedAt"
