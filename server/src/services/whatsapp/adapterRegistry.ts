@@ -64,8 +64,12 @@ const LEGACY_DEVELOPMENT_ENCRYPTION_SECRET = 'oneclick_crm_secret_key_32bytes!';
 
 export function hasSecureEncryptionKey(): boolean {
   const secret = process.env.ENCRYPTION_KEY || '';
+  const knownInsecureKeys = new Set([
+    LEGACY_DEVELOPMENT_ENCRYPTION_SECRET,
+    '0123456789abcdef0123456789abcdef',
+  ]);
   return secret.length >= 32 &&
-    secret !== LEGACY_DEVELOPMENT_ENCRYPTION_SECRET &&
+    !knownInsecureKeys.has(secret) &&
     !/^(replace|placeholder|changeme|example|your_)/i.test(secret);
 }
 
