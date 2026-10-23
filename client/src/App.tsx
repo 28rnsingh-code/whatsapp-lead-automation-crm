@@ -18,6 +18,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { AuditPage } from './pages/AuditPage';
 import { AuthPage } from './pages/AuthPage';
 import { OnboardingPage } from './pages/OnboardingPage';
+import { PasswordChangePage } from './pages/PasswordChangePage';
 import { fetchAuthSessionApi } from './services/api';
 
 export const App: React.FC = () => {
@@ -25,6 +26,7 @@ export const App: React.FC = () => {
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
   const [isDemoSession, setIsDemoSession] = useState<boolean>(() => localStorage.getItem('is_demo_session') === 'true');
+  const [mustChangePassword, setMustChangePassword] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('theme') === 'dark';
   });
@@ -40,6 +42,7 @@ export const App: React.FC = () => {
       localStorage.removeItem('active_tenant_id');
       localStorage.removeItem('is_demo_session');
       setIsDemoSession(false);
+      setMustChangePassword(false);
       setAuthState('unauthenticated');
       setCurrentPage('auth');
     };
@@ -50,8 +53,12 @@ export const App: React.FC = () => {
       setCurrentPage('auth');
     } else {
       fetchAuthSessionApi()
-        .then(() => {
-          if (!cancelled) setAuthState('authenticated');
+        .then((session) => {
+          if (!cancelled) {
+            setMustChangePassword(Boolean(session?.mustChangePassword));
+            setIsDemoSession(localStorage.getItem('is_demo_session') === 'true');
+            setAuthState('authenticated');
+          }
         })
         .catch(() => {
           localStorage.removeItem('auth_token');
@@ -59,6 +66,7 @@ export const App: React.FC = () => {
           localStorage.removeItem('is_demo_session');
           if (!cancelled) {
             setIsDemoSession(false);
+            setMustChangePassword(false);
             setAuthState('unauthenticated');
             setCurrentPage('auth');
           }
@@ -71,10 +79,11 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  const handleLogin = () => {
+  const handleLogin = (forcePasswordChange = false) => {
     setIsDemoSession(localStorage.getItem('is_demo_session') === 'true');
+    setMustChangePassword(forcePasswordChange);
     setAuthState('authenticated');
-    setCurrentPage('dashboard');
+    setCurrentPage(forcePasswordChange ? 'auth' : 'dashboard');
   };
 
   const handleNavigate = (page: NavigationPage) => {
@@ -163,6 +172,10 @@ export const App: React.FC = () => {
 
   if (authState === 'unauthenticated') {
     return <AuthPage onLogin={handleLogin} />;
+  }
+
+  if (mustChangePassword) {
+    return <PasswordChangePage onSuccess={() => { setMustChangePassword(false); setCurrentPage('dashboard'); }} />;
   }
 
   return (
