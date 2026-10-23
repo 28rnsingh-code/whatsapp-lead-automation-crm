@@ -1,0 +1,3 @@
+-- Member accounts can be marked to require a change from their temporary password.
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
