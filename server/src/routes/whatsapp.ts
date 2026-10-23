@@ -510,6 +510,38 @@ router.post('/messages', requireAuth, requireTenant(), async (req: Request, res:
     return;
   }
 
+  // Public demo outbound is always simulated and is never sent to Meta or another provider.
+  if (res.locals.demoMode === true) {
+    const simulatedId = `demo-sim-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const simulatedBody = body || `[Demo template: ${templateName}]`;
+    try {
+      const result = await pool.query(
+        `INSERT INTO whatsapp_messages (
+           tenant_id, lead_id, sender_phone, recipient_phone, direction, message_type,
+           body, status, idempotency_key, provider_message_id, created_at
+         ) VALUES ($1, $2, '+910000000000', $3, 'outbound', $4, $5, 'simulated', $6, $7, NOW())
+         RETURNING id, tenant_id as "tenantId", lead_id as "leadId", direction,
+                   sender_phone as "senderPhone", recipient_phone as "recipientPhone",
+                   message_type as "messageType", body, status, provider_message_id as "providerMessageId",
+                   created_at as "createdAt";`,
+        [tenantId, leadId || null, recipientPhone.trim(), templateName ? 'template' : 'text',
+          simulatedBody, idempotencyKey || simulatedId, simulatedId],
+      );
+      res.status(201).json({
+        success: true,
+        data: result.rows[0],
+        meta: { requestId, demoMode: true, providerSent: false, notice: 'Demo simulation only. No WhatsApp message was sent.' },
+      });
+    } catch (error) {
+      const errorCode = error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+        : 'DATABASE_ERROR';
+      console.error('[WhatsApp Demo] Could not persist simulated message', { requestId, errorCode });
+      sendWhatsAppUnavailable(res, requestId, 'DEMO_MESSAGE_SIMULATION_FAILED', 'The demo message could not be simulated. No external message was sent.');
+    }
+    return;
+  }
+
   // Outbound messages require a real, persisted workspace configuration.
   let rawConfig: any = null;
   try {
