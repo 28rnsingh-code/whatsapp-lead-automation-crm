@@ -31,7 +31,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'team', label: 'Team & Permissions', icon: '♧' },
   { id: 'settings', label: 'Settings', icon: '⚙' },
   { id: 'audit', label: 'Audit Log', icon: '▣' },
-  { id: 'auth', label: 'Login & Recovery', icon: '⚿' },
+  { id: 'auth', label: 'Sign Out', icon: '↪' },
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({

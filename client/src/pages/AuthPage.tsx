@@ -1,14 +1,18 @@
 import React, { useState } from 'react';
 
-export const AuthPage: React.FC = () => {
+interface AuthPageProps { onLogin: () => void; }
+
+export const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
   const [view, setView] = useState<'login' | 'forgot'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [message, setMessage] = useState('');
   const [isError, setIsError] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsSubmitting(true);
     try {
       const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
       const apiBase = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
@@ -23,7 +27,8 @@ export const AuthPage: React.FC = () => {
       if (data.success && data.data?.token) {
         localStorage.setItem('auth_token', data.data.token);
         setIsError(false);
-        setMessage('✓ Successfully signed in to One.Click Autonix CRM.');
+        setMessage('✓ Successfully signed in to OneClick Automics CRM.');
+        onLogin();
       } else {
         setIsError(true);
         setMessage(data.error?.message || 'Authentication failed.');
@@ -31,6 +36,8 @@ export const AuthPage: React.FC = () => {
     } catch {
       setIsError(true);
       setMessage('Failed to connect to authentication server.');
+    } finally {
+      setIsSubmitting(false);
     }
     setTimeout(() => setMessage(''), 4000);
   };
@@ -115,8 +122,8 @@ export const AuthPage: React.FC = () => {
                   style={{ width: '100%' }}
                 />
               </div>
-              <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: '6px' }}>
-                Sign In to Workspace
+              <button type="submit" disabled={isSubmitting} className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: '6px', opacity: isSubmitting ? 0.7 : 1 }}>
+                {isSubmitting ? 'Signing in…' : 'Sign In to Workspace'}
               </button>
             </div>
           </form>
