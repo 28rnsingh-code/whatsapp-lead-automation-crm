@@ -20,7 +20,7 @@ export const AuthPage: React.FC = () => {
       if (data.success && data.data?.token) {
         localStorage.setItem('auth_token', data.data.token);
         setIsError(false);
-        setMessage('✓ Successfully signed in to One Click Automics CRM.');
+        setMessage('✓ Successfully signed in to One.Click Autonix CRM.');
       } else {
         setIsError(true);
         setMessage(data.error?.message || 'Authentication failed.');
