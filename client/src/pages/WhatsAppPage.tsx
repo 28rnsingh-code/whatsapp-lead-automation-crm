@@ -69,6 +69,7 @@ export const WhatsAppPage: React.FC = () => {
   const [textIdempotencyKey, setTextIdempotencyKey] = useState<string | null>(null);
   const [templateIdempotencyKeys, setTemplateIdempotencyKeys] = useState<Record<string, string>>({});
   const [templateParametersByName, setTemplateParametersByName] = useState<Record<string, string[]>>({});
+  const [aiReplyIdempotencyKey, setAiReplyIdempotencyKey] = useState<string | null>(null);
 
   // AI Suggestion State
   const [aiSuggestion, setAiSuggestion] = useState<GenerateAiReplyResponse | null>(null);
@@ -105,6 +106,15 @@ export const WhatsAppPage: React.FC = () => {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    // Drafts and in-flight dedupe keys belong to a specific recipient. Never
+    // carry a pending message draft into a different lead's conversation.
+    setInputMessage('');
+    setTextIdempotencyKey(null);
+    setAiSuggestion(null);
+    setAiReplyIdempotencyKey(null);
+  }, [selectedLead?.id]);
 
   // Load messages for currently selected lead
   useEffect(() => {
@@ -176,22 +186,23 @@ export const WhatsAppPage: React.FC = () => {
     }
 
     const templateName = String(template.name || '');
+    const templateStateKey = `${selectedLead.id}:${templateName}:${template.language || ''}`;
     if (!templateName) {
       showToast('This template has no provider template name and cannot be sent.');
       return;
     }
     const parameterCount = getTemplateBodyParameterCount(template);
     const initialParameters = suggestedTemplateParameters(parameterCount, selectedLead);
-    const parameters = templateParametersByName[templateName] || initialParameters;
+    const parameters = templateParametersByName[templateStateKey] || initialParameters;
     if (parameters.length !== parameterCount || parameters.some((parameter) => !parameter.trim())) {
       showToast(`Fill all ${parameterCount} body parameter(s) before sending this template.`);
       return;
     }
 
     setSending(true);
-    const existingKey = templateIdempotencyKeys[templateName];
+    const existingKey = templateIdempotencyKeys[templateStateKey];
     const requestKey = existingKey || createIdempotencyKey();
-    if (!existingKey) setTemplateIdempotencyKeys((prev) => ({ ...prev, [templateName]: requestKey }));
+    if (!existingKey) setTemplateIdempotencyKeys((prev) => ({ ...prev, [templateStateKey]: requestKey }));
 
     try {
       const sentMsg = await sendWhatsAppMessageApi({
@@ -205,7 +216,7 @@ export const WhatsAppPage: React.FC = () => {
       setMessages((prev) => [...prev.filter((message) => message.id !== sentMsg.id), sentMsg]);
       setTemplateIdempotencyKeys((prev) => {
         const next = { ...prev };
-        delete next[templateName];
+        delete next[templateStateKey];
         return next;
       });
       setShowTemplateModal(false);
@@ -226,7 +237,7 @@ export const WhatsAppPage: React.FC = () => {
     const lastInbound = [...messages].reverse().find((m) => m.direction === 'inbound');
     if (!lastInbound) return false;
     const diffHours = (Date.now() - new Date(lastInbound.createdAt).getTime()) / (1000 * 3600);
-    return diffHours < 24;
+    return diffHours >= 0 && diffHours < 24;
   };
 
   const windowActive = is24HourWindowActive();
@@ -246,6 +257,7 @@ export const WhatsAppPage: React.FC = () => {
         companyName: selectedLead.companyName,
       });
       setAiSuggestion(res);
+      setAiReplyIdempotencyKey(null);
       showToast('AI draft generated.');
     } catch (err: any) {
       showToast(`AI generation error: ${err.message}`);
@@ -271,10 +283,11 @@ export const WhatsAppPage: React.FC = () => {
         recipientPhone: selectedLead.phoneRaw,
         body: aiSuggestion.replyText,
         leadId: selectedLead.id,
-        idempotencyKey: createIdempotencyKey(),
+        idempotencyKey: aiReplyIdempotencyKey || createIdempotencyKey(),
       });
       setMessages((prev) => [...prev.filter((message) => message.id !== sentMsg.id), sentMsg]);
       setAiSuggestion(null);
+      setAiReplyIdempotencyKey(null);
       showToast(sentMsg.status === 'queued'
         ? 'AI reply queued; delivery status is pending.'
         : `AI reply accepted by WhatsApp (status: ${sentMsg.status}).`);
@@ -368,11 +381,14 @@ export const WhatsAppPage: React.FC = () => {
             return (
               <div
                 key={lead.id}
-                onClick={() => setSelectedLead(lead)}
+                onClick={() => {
+                  if (!sending) setSelectedLead(lead);
+                }}
+                aria-disabled={sending}
                 style={{
                   padding: '10px 12px',
                   borderRadius: 'var(--radius-md, 8px)',
-                  cursor: 'pointer',
+                  cursor: sending ? 'not-allowed' : 'pointer',
                   background: isSelected ? 'var(--surface-secondary, #f8faff)' : 'var(--surface, #ffffff)',
                   border: isSelected ? '1px solid var(--blue, #155eef)' : '1px solid var(--line, #e1e9f5)',
                   transition: 'all 0.15s ease',
@@ -626,7 +642,8 @@ export const WhatsAppPage: React.FC = () => {
                 const bodyText = getTemplateBodyText(tpl);
                 const parameterCount = getTemplateBodyParameterCount(tpl);
                 const defaults = selectedLead ? suggestedTemplateParameters(parameterCount, selectedLead) : [];
-                const parameters = templateParametersByName[tpl.name] || defaults;
+                const templateStateKey = `${selectedLead?.id || 'none'}:${tpl.name}:${tpl.language || ''}`;
+                const parameters = templateParametersByName[templateStateKey] || defaults;
                 const approved = tpl.status === 'APPROVED';
                 const unsupportedHeader = getTemplateHeaderParameterCount(tpl) > 0;
                 return (
@@ -656,17 +673,17 @@ export const WhatsAppPage: React.FC = () => {
                       <div style={{ display: 'grid', gap: '8px', marginBottom: '10px' }}>
                         {Array.from({ length: parameterCount }, (_, index) => (
                           <div key={index}>
-                            <label htmlFor={`template-${tpl.name}-param-${index}`} style={{ display: 'block', fontSize: '11px', fontWeight: 600, marginBottom: '3px' }}>
+                            <label htmlFor={`template-${encodeURIComponent(templateStateKey)}-param-${index}`} style={{ display: 'block', fontSize: '11px', fontWeight: 600, marginBottom: '3px' }}>
                               Body parameter {index + 1}
                             </label>
                             <input
-                              id={`template-${tpl.name}-param-${index}`}
+                              id={`template-${encodeURIComponent(templateStateKey)}-param-${index}`}
                               className="form-control"
                               value={parameters[index] ?? ''}
                               onChange={(e) => {
                                 const next = [...parameters];
                                 next[index] = e.target.value;
-                                setTemplateParametersByName((prev) => ({ ...prev, [tpl.name]: next }));
+                                setTemplateParametersByName((prev) => ({ ...prev, [templateStateKey]: next }));
                               }}
                               disabled={sending || !approved}
                               style={{ width: '100%' }}
