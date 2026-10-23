@@ -69,9 +69,25 @@ describe('Public demo isolation and usage limits', () => {
     expect(limited.body.error.limit).toBe(5);
   });
 
-  it('simulates a WhatsApp send in demo and never calls a provider', async () => {
-    const login = await loginDemo();
+  it('simulates a WhatsApp send and sample templates without calling a provider', async () => {
+    const visitorId = crypto.randomUUID();
+    const login = await loginDemo(visitorId);
     expect(login.status).toBe(200);
+    const usage = await request(app)
+      .get('/api/demo/usage')
+      .set('Authorization', 'Bearer ' + login.body.data.token)
+      .set('x-tenant-id', DEMO_TENANT);
+    expect(usage.status).toBe(200);
+    expect(usage.body.data).toMatchObject({ limit: 5, used: 0, remaining: 5, simulatedOutbound: true });
+
+    const templates = await request(app)
+      .get('/api/whatsapp/templates')
+      .set('Authorization', 'Bearer ' + login.body.data.token)
+      .set('x-tenant-id', DEMO_TENANT);
+    expect(templates.status).toBe(200);
+    expect(templates.body.meta.demoMode).toBe(true);
+    expect(templates.body.data.every((template: { status: string }) => template.status === 'DEMO SAMPLE')).toBe(true);
+
     const res = await request(app)
       .post('/api/whatsapp/messages')
       .set('Authorization', 'Bearer ' + login.body.data.token)
