@@ -24,6 +24,7 @@ export const App: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<NavigationPage>('dashboard');
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
+  const [isDemoSession, setIsDemoSession] = useState<boolean>(() => localStorage.getItem('is_demo_session') === 'true');
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('theme') === 'dark';
   });
@@ -37,6 +38,8 @@ export const App: React.FC = () => {
     const handleUnauthorized = () => {
       localStorage.removeItem('auth_token');
       localStorage.removeItem('active_tenant_id');
+      localStorage.removeItem('is_demo_session');
+      setIsDemoSession(false);
       setAuthState('unauthenticated');
       setCurrentPage('auth');
     };
@@ -53,7 +56,9 @@ export const App: React.FC = () => {
         .catch(() => {
           localStorage.removeItem('auth_token');
           localStorage.removeItem('active_tenant_id');
+          localStorage.removeItem('is_demo_session');
           if (!cancelled) {
+            setIsDemoSession(false);
             setAuthState('unauthenticated');
             setCurrentPage('auth');
           }
@@ -67,6 +72,7 @@ export const App: React.FC = () => {
   }, []);
 
   const handleLogin = () => {
+    setIsDemoSession(localStorage.getItem('is_demo_session') === 'true');
     setAuthState('authenticated');
     setCurrentPage('dashboard');
   };
@@ -75,6 +81,8 @@ export const App: React.FC = () => {
     if (page === 'auth') {
       localStorage.removeItem('auth_token');
       localStorage.removeItem('active_tenant_id');
+      localStorage.removeItem('is_demo_session');
+      setIsDemoSession(false);
       setAuthState('unauthenticated');
       setCurrentPage('auth');
       return;
@@ -160,6 +168,7 @@ export const App: React.FC = () => {
       currentPage={currentPage}
       onNavigate={handleNavigate}
       isDarkMode={isDarkMode}
+      isDemo={isDemoSession}
       onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
       onGlobalSearch={(query) => {
         if (!query.trim()) return;
