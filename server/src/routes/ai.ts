@@ -9,6 +9,7 @@ import {
   maskAiConfig,
   encryptSecret,
   decryptSecret,
+  hasSecureEncryptionKey,
 } from '../services/ai/aiRegistry';
 import { AiConfig } from '../services/ai/types';
 
@@ -18,6 +19,10 @@ const TENANT_UUID_MAP: Record<string, string> = {
   tenant_bring_my_bite: DEFAULT_TENANT_ID,
   tenant_automics_labs: 'a0000000-0000-0000-0000-000000000002',
 };
+
+function isProductionRuntime(): boolean {
+  return process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
+}
 
 function isTestFixtureMode(): boolean {
   return (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') &&
@@ -51,6 +56,14 @@ const IN_MEMORY_AI_CONFIGS: Record<string, AiConfig> = {
 
 // 1. GET /api/ai/config - Fetch persistent tenant AI Settings (Masked)
 router.get('/config', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    res.status(503).json({
+      success: false,
+      error: { code: 'AI_ENCRYPTION_KEY_MISSING', message: 'AI settings cannot be read safely until a unique persistent ENCRYPTION_KEY is configured.', requestId: req.requestId || 'req_unknown' },
+    });
+    return;
+  }
+
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const rawTenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
@@ -120,6 +133,14 @@ router.get('/config', requireAuth, requireTenant(), async (req: Request, res: Re
 
 // 2. POST /api/ai/config - Validate and persist tenant AI settings
 router.post('/config', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    res.status(503).json({
+      success: false,
+      error: { code: 'AI_ENCRYPTION_KEY_MISSING', message: 'AI credentials cannot be saved until a unique persistent ENCRYPTION_KEY is configured.', requestId: req.requestId || 'req_unknown' },
+    });
+    return;
+  }
+
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const rawTenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
@@ -274,6 +295,14 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
 
 // 3. POST /api/ai/generate-reply - Generate a draft from saved tenant configuration.
 router.post('/generate-reply', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    res.status(503).json({
+      success: false,
+      error: { code: 'AI_ENCRYPTION_KEY_MISSING', message: 'AI replies are disabled until a unique persistent ENCRYPTION_KEY is configured.', requestId: req.requestId || 'req_unknown' },
+    });
+    return;
+  }
+
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const rawTenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
