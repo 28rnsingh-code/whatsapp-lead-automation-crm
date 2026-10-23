@@ -202,7 +202,21 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
     enabled = true,
   } = req.body;
 
-  const adapter = getAiAdapter(provider);
+  let adapter;
+  try {
+    adapter = getAiAdapter(provider);
+  } catch (error) {
+    const mockDisabled = provider === 'mock' && process.env.NODE_ENV === 'production';
+    res.status(mockDisabled ? 409 : 400).json({
+      success: false,
+      error: {
+        code: mockDisabled ? 'AI_MOCK_DISABLED' : 'AI_PROVIDER_UNSUPPORTED',
+        message: mockDisabled ? 'The mock AI provider is disabled in production. Configure a real AI provider.' : 'This AI provider is not implemented in the current release.',
+        requestId,
+      },
+    });
+    return;
+  }
   let validation: { valid: boolean; error?: string } = { valid: true };
 
   if (apiKey) {
@@ -328,7 +342,13 @@ router.post('/generate-reply', requireAuth, requireTenant(), async (req: Request
     }
   }
 
-  const adapter = getAiAdapter(raw.provider);
+  let adapter;
+  try {
+    adapter = getAiAdapter(raw.provider);
+  } catch {
+    res.status(409).json({ success: false, error: { code: 'AI_PROVIDER_UNSUPPORTED', message: 'The saved AI provider is not implemented in this release. Select a supported provider in Settings.', requestId } });
+    return;
+  }
   let result;
   try {
     result = await adapter.generateReply({
