@@ -1,4 +1,4 @@
-import express, { Express } from 'express';
+import express, { Express, Request } from 'express';
 import cors from 'cors';
 import { requestIdMiddleware, errorHandler } from './middleware/errorHandler';
 import healthRoutes from './routes/health';
@@ -20,7 +20,13 @@ export function createApp(): Express {
 
   // Standard Middlewares
   app.use(cors());
-  app.use(express.json({ limit: '15mb' }));
+  // Keep exact request bytes so signed provider webhooks can be verified before ingestion.
+  app.use(express.json({
+    limit: '15mb',
+    verify: (req, _res, buffer) => {
+      (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+    },
+  }));
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
   app.use(requestIdMiddleware);
 
