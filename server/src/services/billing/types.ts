@@ -3,6 +3,7 @@ export type SubscriptionStatus = 'trial' | 'active' | 'past_due' | 'cancelled' |
 export type BillingProviderType = 'razorpay' | 'stripe' | 'mock';
 
 export interface PlanLimits {
+  maxMembers: number;
   maxLeads: number;
   maxImportsPerMonth: number;
   maxMessagesPerMonth: number;
@@ -23,36 +24,39 @@ export const PLAN_DEFINITIONS: Record<PlanTier, PlanDefinition> = {
     name: 'Starter Plan',
     priceMonthlyInr: 2999,
     limits: {
+      maxMembers: 2,
       maxLeads: 1000,
       maxImportsPerMonth: 10,
       maxMessagesPerMonth: 500,
       maxAiTokens: 50000,
     },
-    features: ['1,000 Active Leads', '10 Excel/CSV Imports/mo', '500 WhatsApp Messages/mo', 'Basic AI Auto-Reply'],
+    features: ['Up to 2 team members', '1,000 Active Leads', '10 Excel/CSV Imports/mo', '500 WhatsApp Messages/mo', 'Basic AI Auto-Reply'],
   },
   growth: {
     id: 'growth',
     name: 'Growth Plan',
     priceMonthlyInr: 7999,
     limits: {
+      maxMembers: 5,
       maxLeads: 10000,
       maxImportsPerMonth: 100,
       maxMessagesPerMonth: 5000,
       maxAiTokens: 500000,
     },
-    features: ['10,000 Active Leads', '100 Imports/mo', '5,000 WhatsApp Messages/mo', 'Advanced Multi-model AI', 'Custom Pipelines'],
+    features: ['Up to 5 team members', '10,000 Active Leads', '100 Imports/mo', '5,000 WhatsApp Messages/mo', 'Advanced Multi-model AI', 'Custom Pipelines'],
   },
   enterprise: {
     id: 'enterprise',
     name: 'Enterprise Plan',
     priceMonthlyInr: 19999,
     limits: {
+      maxMembers: 10,
       maxLeads: 100000,
       maxImportsPerMonth: 1000,
       maxMessagesPerMonth: 50000,
       maxAiTokens: 5000000,
     },
-    features: ['Unlimited Scale', 'Dedicated WhatsApp Number', 'Custom Integrations', 'SLA Support'],
+    features: ['Up to 10 team members', '100,000 Active Leads', '50,000 WhatsApp Messages/mo', 'Dedicated WhatsApp Number', 'Custom Integrations', 'SLA Support'],
   },
 };
 
