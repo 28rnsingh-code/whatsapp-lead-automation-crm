@@ -19,6 +19,9 @@ export interface AuthTokenPayload {
   userId: string;
   email: string;
   defaultTenantId?: string;
+  /** Public-demo session identifier; only issued by the gated demo login flow. */
+  demoSessionId?: string;
+  demo?: boolean;
   iat?: number;
   exp?: number;
 }
