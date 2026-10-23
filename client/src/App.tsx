@@ -18,15 +18,65 @@ import { SettingsPage } from './pages/SettingsPage';
 import { AuditPage } from './pages/AuditPage';
 import { AuthPage } from './pages/AuthPage';
 import { OnboardingPage } from './pages/OnboardingPage';
+import { fetchAuthSessionApi } from './services/api';
 
 export const App: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<NavigationPage>('dashboard');
+  const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('theme') === 'dark';
   });
   const [toasts, setToasts] = useState<ToastMessage[]>([
     { id: '1', text: 'Welcome back, Rohan! 4 new leads arrived via Website & WhatsApp.', type: 'info' },
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const handleUnauthorized = () => {
+      localStorage.removeItem('auth_token');
+      setAuthState('unauthenticated');
+      setCurrentPage('auth');
+    };
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+
+    if (!localStorage.getItem('auth_token')) {
+      setAuthState('unauthenticated');
+      setCurrentPage('auth');
+    } else {
+      fetchAuthSessionApi()
+        .then(() => {
+          if (!cancelled) setAuthState('authenticated');
+        })
+        .catch(() => {
+          localStorage.removeItem('auth_token');
+          if (!cancelled) {
+            setAuthState('unauthenticated');
+            setCurrentPage('auth');
+          }
+        });
+    }
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('auth:unauthorized', handleUnauthorized);
+    };
+  }, []);
+
+  const handleLogin = () => {
+    setAuthState('authenticated');
+    setCurrentPage('dashboard');
+  };
+
+  const handleNavigate = (page: NavigationPage) => {
+    if (page === 'auth') {
+      localStorage.removeItem('auth_token');
+      setAuthState('unauthenticated');
+      setCurrentPage('auth');
+      return;
+    }
+    setCurrentPage(page);
+  };
 
   useEffect(() => {
     if (isDarkMode) {
@@ -53,9 +103,9 @@ export const App: React.FC = () => {
   const renderCurrentPage = () => {
     switch (currentPage) {
       case 'dashboard':
-        return <DashboardPage onNavigate={setCurrentPage} />;
+        return <DashboardPage onNavigate={handleNavigate} />;
       case 'onboarding':
-        return <OnboardingPage onNavigate={setCurrentPage} />;
+        return <OnboardingPage onNavigate={handleNavigate} />;
       case 'leads':
         return <LeadsPage />;
       case 'pipeline':
@@ -79,16 +129,32 @@ export const App: React.FC = () => {
       case 'audit':
         return <AuditPage />;
       case 'auth':
-        return <AuthPage />;
+        return null;
       default:
-        return <DashboardPage onNavigate={setCurrentPage} />;
+        return <DashboardPage onNavigate={handleNavigate} />;
     }
   };
+
+  if (authState === 'checking') {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: '24px', color: 'var(--text-muted, #667085)' }}
+      >
+        Checking your workspace session…
+      </div>
+    );
+  }
+
+  if (authState === 'unauthenticated') {
+    return <AuthPage onLogin={handleLogin} />;
+  }
 
   return (
     <AppShell
       currentPage={currentPage}
-      onNavigate={setCurrentPage}
+      onNavigate={handleNavigate}
       isDarkMode={isDarkMode}
       onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
     >
