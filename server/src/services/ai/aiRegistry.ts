@@ -2,7 +2,7 @@ import { AiProviderAdapter, AiProviderType, AiConfig, MaskedAiConfig } from './t
 import { MockAiAdapter } from './mockAdapter';
 import { OpenAiAdapter } from './openaiAdapter';
 import { GeminiAdapter } from './geminiAdapter';
-import { maskSecret, encryptSecret, decryptSecret } from '../whatsapp/adapterRegistry';
+import { maskSecret, encryptSecret, decryptSecret, hasSecureEncryptionKey } from '../whatsapp/adapterRegistry';
 
 const adapters: Partial<Record<AiProviderType, AiProviderAdapter>> = {
   openai: new OpenAiAdapter(),
@@ -61,4 +61,4 @@ export function maskAiConfig(config: AiConfig): MaskedAiConfig {
   };
 }
 
-export { encryptSecret, decryptSecret };
+export { encryptSecret, decryptSecret, hasSecureEncryptionKey };
