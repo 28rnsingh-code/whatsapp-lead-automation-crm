@@ -35,6 +35,15 @@ These are the values currently defined in `server/src/services/billing/types.ts`
 
 Current subscription controls update CRM entitlements in sandbox/mock mode only. They do not collect payment. Stripe webhooks now require signature verification and are idempotent, but a real checkout/session creator, provider account, live event mapping and signed staging verification are not configured. Razorpay is not implemented. Invoice/tax handling, renewal/cancellation and delinquency suspension must be configured and tested before selling subscriptions. An email allowance/rate is not part of the current plan schema. Do not advertise a free customer email allowance: demo sends are simulated, and real email sends should remain disabled until the business defines included volume/overage charging and configures a verified provider. The free tiers from email providers are development/operational constraints, not a customer-facing product plan.
 
+
+Historical AI token usage cannot be reconstructed because prior AI calls did not persist provider token counts. The `ai_tokens_count` counter begins from the first metered request after this release; do not treat its initial value as historical lifetime usage.
+
+## Billing webhooks
+
+- Stripe webhook delivery requires the server-side `STRIPE_WEBHOOK_SECRET`, validates the signed raw request body and a five-minute signature timestamp tolerance, and records provider event IDs to block duplicate replay.
+- Mock billing webhooks are test-only; Razorpay is not implemented and must not be connected.
+- Real payment checkout is still absent, so signed Stripe webhook processing does not mean subscriptions can be sold yet.
+
 ## Email
 
 There is currently no verified transactional-email sender integrated into the password-recovery flow. The API intentionally returns a generic confirmation and does not send an email. Do not show a “reset link sent” success message until a real token is generated, persisted safely, sent through a verified provider, expired, consumed once and tested. No email API key is set by this change. Choose a provider and configure sender/domain authentication and secret storage before enabling email delivery. Provider free tiers must not be advertised as the customer plan; set the product's included email quota and overage policy as paid-plan terms.
