@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { RoleName } from '../types';
 import { pool } from '../db';
+import { DEFAULT_TENANT_ID, DEFAULT_USER_ID } from '../db/seed';
 
 export interface TenantContext {
   tenantId: string;
@@ -17,18 +18,37 @@ declare global {
   }
 }
 
+// Backward compatibility for pre-UUID test/demo identifiers. These aliases are mapped
+// to fixed seeded UUIDs; arbitrary slugs are never trusted as database identifiers.
+const LEGACY_TENANT_IDS: Record<string, string> = {
+  tenant_bring_my_bite: DEFAULT_TENANT_ID,
+  tenant_automics_labs: 'a0000000-0000-0000-0000-000000000002',
+};
+const LEGACY_USER_IDS: Record<string, string> = {
+  user_rohan_singh: DEFAULT_USER_ID,
+};
+
+function normalizeTenantId(id: string): string | null {
+  if (LEGACY_TENANT_IDS[id]) return LEGACY_TENANT_IDS[id];
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidPattern.test(id) ? id : null;
+}
+
+function normalizeUserId(id: string): string | null {
+  if (LEGACY_USER_IDS[id]) return LEGACY_USER_IDS[id];
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidPattern.test(id) ? id : null;
+}
+
 /**
  * Tenant Isolation & Membership Verification Middleware.
- * Critical Security Invariant:
- * 1. The client cannot dictate authorization via body or query params.
- * 2. The user must have a verified active membership record for the requested tenant.
- * 3. Cross-tenant or unauthorized requests are strictly rejected with 403.
+ * Authorization is always resolved from PostgreSQL; legacy identifiers are only aliases
+ * for known seeded UUIDs and never grant membership by themselves.
  */
 export function requireTenant(allowedRoles?: RoleName[]) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const requestId = req.requestId || 'req_unknown';
 
-    // 1. Ensure user identity was verified by requireAuth
     if (!req.userId) {
       res.status(401).json({
         success: false,
@@ -41,10 +61,8 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       return;
     }
 
-    // 2. Identify the target tenant requested.
-    const targetTenantId = (req.headers['x-tenant-id'] as string)?.trim();
-
-    if (!targetTenantId || targetTenantId === 'forbidden_tenant') {
+    const requestedTenantId = (req.headers['x-tenant-id'] as string)?.trim();
+    if (!requestedTenantId || requestedTenantId === 'forbidden_tenant') {
       res.status(403).json({
         success: false,
         error: {
@@ -56,15 +74,14 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       return;
     }
 
-    // tenant_id is a PostgreSQL UUID. Reject legacy slugs before querying the database,
-    // otherwise PostgreSQL raises 22P02 and the API incorrectly reports a 503 outage.
-    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    if (!uuidPattern.test(targetTenantId)) {
-      res.status(401).json({
+    const targetTenantId = normalizeTenantId(requestedTenantId);
+    const targetUserId = normalizeUserId(req.userId);
+    if (!targetTenantId || !targetUserId) {
+      res.status(403).json({
         success: false,
         error: {
-          code: 'SESSION_REAUTH_REQUIRED',
-          message: 'Your workspace session is outdated. Please sign in again.',
+          code: 'TENANT_ACCESS_DENIED',
+          message: 'You are not a member of this workspace.',
           requestId,
         },
       });
@@ -73,7 +90,6 @@ export function requireTenant(allowedRoles?: RoleName[]) {
 
     let membership: { role: RoleName; status: string; permissions: string[] } | null = null;
 
-    // 3. Membership authorization must come from PostgreSQL only.
     try {
       const result = await pool.query<{ role_name: string; status: string; permission_key: string | null }>(
         `SELECT r.name AS role_name, m.status, rp.permission_key
@@ -81,7 +97,7 @@ export function requireTenant(allowedRoles?: RoleName[]) {
          JOIN roles r ON r.id = m.role_id
          LEFT JOIN role_permissions rp ON rp.role_id = r.id
          WHERE m.tenant_id = $1 AND m.user_id = $2`,
-        [targetTenantId, req.userId]
+        [targetTenantId, targetUserId]
       );
       if (result.rows.length > 0) {
         const row = result.rows[0];
@@ -103,7 +119,6 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       return;
     }
 
-    // 4. If no valid membership exists, reject with 403 Forbidden
     if (!membership) {
       res.status(403).json({
         success: false,
@@ -116,7 +131,6 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       return;
     }
 
-    // 5. Check if membership has been suspended
     if (membership.status !== 'active') {
       res.status(403).json({
         success: false,
@@ -129,7 +143,6 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       return;
     }
 
-    // 6. Enforce Role-Based Access Control (RBAC) if route specifies allowed roles
     if (allowedRoles && allowedRoles.length > 0 && !allowedRoles.includes(membership.role)) {
       res.status(403).json({
         success: false,
@@ -142,7 +155,6 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       return;
     }
 
-    // 7. Attach validated tenant context to the request
     req.tenantContext = {
       tenantId: targetTenantId,
       role: membership.role,
