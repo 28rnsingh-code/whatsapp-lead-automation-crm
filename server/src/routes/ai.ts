@@ -378,40 +378,109 @@ router.post('/generate-reply', requireAuth, requireTenant(), async (req: Request
   });
 });
 
-// 4. POST /api/ai/approve-reply - Approve Draft & Dispatch to WhatsApp
+// 4. POST /api/ai/approve-reply - Send only through a configured real workspace provider.
 router.post('/approve-reply', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const requestId = req.requestId || 'req_unknown';
   const { recipientPhone, replyText, leadId } = req.body;
-
-  if (!recipientPhone || !replyText) {
-    res.status(400).json({
-      success: false,
-      error: { code: 'VALIDATION_ERROR', message: 'Recipient phone and reply text are required.', requestId },
-    });
+  if (typeof recipientPhone !== 'string' || !recipientPhone.trim() || typeof replyText !== 'string' || !replyText.trim()) {
+    res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Recipient phone and reply text are required.', requestId } });
     return;
   }
 
-  // Dispatch via WhatsApp adapter
-  const adapter = getWhatsAppAdapter('mock');
-  const sendResult = await adapter.sendMessage({
-    tenantId,
-    recipientPhone,
-    messageType: 'text',
-    body: replyText,
-    leadId,
-    credentials: { provider: 'mock' },
-  });
+  let rawConfig: any;
+  try {
+    if (resolveDatabaseConfig().isBlocked) {
+      res.status(503).json({ success: false, error: { code: 'WHATSAPP_CONFIG_UNAVAILABLE', message: 'A configured persistent WhatsApp provider is required before an AI draft can be sent.', requestId } });
+      return;
+    }
+    const configResult = await pool.query(
+      `SELECT config_data FROM tenant_settings WHERE tenant_id = $1 AND category = 'whatsapp' LIMIT 1`,
+      [tenantId],
+    );
+    if (!configResult.rows.length) {
+      res.status(409).json({ success: false, error: { code: 'WHATSAPP_NOT_CONFIGURED', message: 'Connect and verify a WhatsApp provider in Integrations before sending this AI reply.', requestId } });
+      return;
+    }
+    rawConfig = typeof configResult.rows[0].config_data === 'string' ? JSON.parse(configResult.rows[0].config_data) : configResult.rows[0].config_data;
+    for (const key of ['accessToken', 'appSecret', 'webhookVerifyToken', 'apiKey', 'authToken']) {
+      if (typeof rawConfig[key] === 'string' && rawConfig[key]) rawConfig[key] = decryptSecret(rawConfig[key]);
+    }
+  } catch (error) {
+    console.error('[AI Approval] WhatsApp configuration load failed', { requestId, error });
+    res.status(503).json({ success: false, error: { code: 'WHATSAPP_CONFIG_UNAVAILABLE', message: 'Saved WhatsApp provider configuration could not be loaded. No message was sent.', requestId } });
+    return;
+  }
 
-  res.json({
-    success: true,
-    data: {
-      message: 'AI response approved and dispatched successfully.',
-      providerMessageId: sendResult.providerMessageId,
-      status: sendResult.status,
-    },
-    meta: { requestId },
-  });
+  if (!rawConfig || rawConfig.status !== 'connected') {
+    res.status(409).json({ success: false, error: { code: 'WHATSAPP_NOT_CONFIGURED', message: 'Connect and verify a WhatsApp provider before sending this AI reply.', requestId } });
+    return;
+  }
+  if (rawConfig.provider === 'mock' && process.env.NODE_ENV === 'production') {
+    res.status(409).json({ success: false, error: { code: 'WHATSAPP_MOCK_DISABLED', message: 'The mock provider is disabled in production. Configure a real provider.', requestId } });
+    return;
+  }
+
+  let adapter;
+  try { adapter = getWhatsAppAdapter(rawConfig.provider); }
+  catch {
+    res.status(400).json({ success: false, error: { code: 'WHATSAPP_PROVIDER_UNSUPPORTED', message: 'The configured WhatsApp provider is not implemented in this release.', requestId } });
+    return;
+  }
+
+  let usageReservation: MonthlyUsageReservation | null = null;
+  try {
+    if (!resolveDatabaseConfig().isBlocked) usageReservation = await reserveMonthlyUsage(tenantId, 'messages', 1);
+  } catch (error) {
+    if (error instanceof PlanQuotaExceededError) {
+      res.status(429).json({ success: false, error: { code: error.code, message: `Monthly WhatsApp message limit reached (${error.used}/${error.limit}). Upgrade your plan to continue.`, used: error.used, limit: error.limit, requestId } });
+      return;
+    }
+    if (error instanceof SubscriptionAccessError) {
+      res.status(402).json({ success: false, error: { code: error.code, message: 'This workspace subscription is not active. Update the plan before sending messages.', status: error.subscriptionStatus, requestId } });
+      return;
+    }
+    console.error('[AI Approval] Message quota could not be verified', { requestId, error });
+    res.status(503).json({ success: false, error: { code: 'USAGE_METER_UNAVAILABLE', message: 'Message quota could not be verified. No message was sent.', requestId } });
+    return;
+  }
+
+  let sendResult;
+  try {
+    sendResult = await adapter.sendMessage({
+      tenantId, recipientPhone: recipientPhone.trim(), messageType: 'text', body: replyText.trim(), leadId,
+      credentials: rawConfig,
+    });
+  } catch (error) {
+    console.error('[AI Approval] Provider result unknown', { requestId, error });
+    res.status(502).json({ success: false, error: { code: 'PROVIDER_RESULT_UNKNOWN', message: 'The provider result is unknown. Usage remains reserved to avoid quota bypass; check provider status before retrying.', requestId } });
+    return;
+  }
+
+  if (!sendResult.success) {
+    if (usageReservation) await releaseMonthlyUsage(usageReservation).catch((error) => console.error('[AI Approval] Usage release failed', { requestId, error }));
+    res.status(502).json({ success: false, error: { code: 'PROVIDER_ERROR', message: sendResult.error || 'WhatsApp provider failed to send the approved reply.', requestId } });
+    return;
+  }
+
+  const senderPhone = rawConfig.sourceNumber || (rawConfig.phoneNumberId ? String(rawConfig.phoneNumberId) : '');
+  try {
+    const saved = await pool.query(
+      `INSERT INTO whatsapp_messages (tenant_id, lead_id, direction, sender_phone, recipient_phone, message_type, body, status, idempotency_key, provider_message_id, ai_generated, created_at)
+       VALUES ($1, $2, 'outbound', $3, $4, 'text', $5, $6, $7, $8, TRUE, NOW())
+       RETURNING id, tenant_id as \"tenantId\", lead_id as \"leadId\", direction, sender_phone as \"senderPhone\", recipient_phone as \"recipientPhone\", message_type as \"messageType\", body, status, provider_message_id as \"providerMessageId\", ai_generated as \"aiGenerated\", created_at as \"createdAt\"`,
+      [tenantId, leadId || null, senderPhone, recipientPhone.trim(), replyText.trim(), sendResult.status, `ai-approval-${requestId}`, sendResult.providerMessageId],
+    );
+    res.status(201).json({
+      success: true,
+      data: { message: 'AI reply accepted by the configured WhatsApp provider.', ...saved.rows[0] },
+      meta: { requestId, provider: rawConfig.provider, providerMessageId: sendResult.providerMessageId },
+    });
+  } catch (error) {
+    // Provider has accepted the send. Keep the usage reservation and make the persistence failure explicit.
+    console.error('[AI Approval] Provider accepted message but CRM persistence failed', { requestId, error });
+    res.status(503).json({ success: false, error: { code: 'MESSAGE_PERSISTENCE_FAILED_AFTER_SEND', message: 'The provider accepted the message, but CRM history could not be saved. Check provider delivery status before retrying.', requestId, providerMessageId: sendResult.providerMessageId } });
+  }
 });
 
 export default router;
