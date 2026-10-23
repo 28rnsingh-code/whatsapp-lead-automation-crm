@@ -14,7 +14,10 @@ export class OpenAiAdapter implements AiProviderAdapter {
     }
 
     if (apiKey.startsWith('test_') || apiKey.includes('mock')) {
-      return { valid: true };
+      if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+        return { valid: true };
+      }
+      return { valid: false, error: 'Test/mock API keys are allowed only in isolated automated tests.' };
     }
 
     try {
@@ -35,12 +38,20 @@ export class OpenAiAdapter implements AiProviderAdapter {
     const { incomingMessage, leadName, config } = params;
 
     if (config.apiKey && (config.apiKey.startsWith('test_') || config.apiKey.includes('mock'))) {
+      if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+        return {
+          success: true,
+          replyText: `Hello ${leadName || 'valued customer'}, thanks for reaching out! Regarding "${incomingMessage}", our team is available to assist you right now.`,
+          confidence: 0.95,
+          tokensUsed: 35,
+          model: config.model || 'gpt-4o-mini',
+        };
+      }
       return {
-        success: true,
-        replyText: `Hello ${leadName || 'valued customer'}, thanks for reaching out! Regarding "${incomingMessage}", our team is available to assist you right now.`,
-        confidence: 0.95,
-        tokensUsed: 35,
+        success: false,
+        confidence: 0,
         model: config.model || 'gpt-4o-mini',
+        error: 'Test/mock AI credentials are disabled outside automated tests.',
       };
     }
 
