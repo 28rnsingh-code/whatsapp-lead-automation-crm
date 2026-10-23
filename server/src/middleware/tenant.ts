@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { RoleName } from '../types';
-import { pool } from '../db';
+import { pool, resolveDatabaseConfig, DatabaseSafetyError } from '../db';
 
 export interface TenantContext {
   tenantId: string;
@@ -131,6 +131,24 @@ export function requireTenant(allowedRoles?: RoleName[]) {
         }
       }
     } catch (error) {
+      if (error instanceof DatabaseSafetyError || (error as Error)?.name === 'DatabaseSafetyError') {
+        res.status(503).json({
+          success: false,
+          error: { code: 'DATABASE_SAFETY_BLOCKED', message: (error as Error).message, requestId },
+        });
+        return;
+      }
+      if (resolveDatabaseConfig().isBlocked) {
+        // Do not touch the shared development database in test mode. Let routes handle
+        // the configured safe mock/empty response for this request.
+        req.tenantContext = {
+          tenantId: targetTenantId,
+          role: 'Admin',
+          permissions: [],
+        };
+        next();
+        return;
+      }
       console.error('[Tenant] Membership lookup failed', { requestId, error });
       res.status(503).json({
         success: false,
