@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { hasSecureEncryptionKey } from '../src/services/whatsapp/adapterRegistry';
 import { createHmac } from 'crypto';
 import request from 'supertest';
 import { createApp } from '../src/app';
@@ -13,6 +14,27 @@ import {
 } from '../src/services/whatsapp/adapterRegistry';
 
 describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
+  it('rejects missing, placeholder, and published default encryption keys', () => {
+    const original = process.env.ENCRYPTION_KEY;
+    try {
+      delete process.env.ENCRYPTION_KEY;
+      expect(hasSecureEncryptionKey()).toBe(false);
+
+      process.env.ENCRYPTION_KEY = 'replace_with_a_unique_secure_random_64_char_encryption_key';
+      expect(hasSecureEncryptionKey()).toBe(false);
+
+      process.env.ENCRYPTION_KEY = '0123456789abcdef0123456789abcdef';
+      expect(hasSecureEncryptionKey()).toBe(false);
+
+      process.env.ENCRYPTION_KEY = 'A-distinct-random-key-for-this-isolated-test-run-987654321';
+      expect(hasSecureEncryptionKey()).toBe(true);
+    } finally {
+      if (original === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = original;
+    }
+  });
+
+
   const app = createApp();
 
   const rohanToken = signToken({
