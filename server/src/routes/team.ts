@@ -33,7 +33,7 @@ async function ensureRole(tenantId: string, roleName: RoleName, client: any): Pr
 }
 
 async function maxMembersForTenant(client: any, tenantId: string): Promise<{ maxMembers: number; planId: string }> {
-  const result = await client.query<{ plan_id: string; limits: any }>(
+  const result = await client.query(
     'SELECT plan_id, limits FROM tenant_subscriptions WHERE tenant_id = $1 LIMIT 1',
     [tenantId],
   );
@@ -218,9 +218,10 @@ router.post('/members', requireAuth, requireTenant(['Admin']), async (req: Reque
 router.patch('/members/:userId/role', requireAuth, requireTenant(['Admin']), async (req: Request, res: Response): Promise<void> => {
   const tenantId = req.tenantContext!.tenantId;
   const userId = req.params.userId;
-  const role = typeof req.body?.role === 'string' ? req.body.role as RoleName : '';
+  const requestedRole = typeof req.body?.role === 'string' ? req.body.role : null;
+  const role = requestedRole && ALLOWED_ROLES.includes(requestedRole as RoleName) ? requestedRole as RoleName : null;
   const id = requestId(req);
-  if (!UUID_PATTERN.test(userId) || !ALLOWED_ROLES.includes(role)) {
+  if (!UUID_PATTERN.test(userId) || !role) {
     fail(res, 400, 'INVALID_MEMBER_ROLE', 'A valid member UUID and role are required.', id);
     return;
   }
