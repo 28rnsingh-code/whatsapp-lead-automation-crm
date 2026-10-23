@@ -1,5 +1,7 @@
 import { AiProviderAdapter, GenerateReplyParams, GenerateReplyResult } from './types';
 
+function isTestRuntime(): boolean { return process.env.NODE_ENV === 'test' || process.env.VITEST === 'true'; }
+
 export class GeminiAdapter implements AiProviderAdapter {
   readonly id = 'gemini';
   readonly name = 'Google Gemini (Gemini 1.5 Flash / Pro)';
@@ -12,8 +14,10 @@ export class GeminiAdapter implements AiProviderAdapter {
     if (apiKey.startsWith('invalid')) {
       return { valid: false, error: 'Authentication failed: Invalid Gemini API key.' };
     }
-    if (apiKey.startsWith('test_') || apiKey.includes('mock')) {
-      return { valid: true };
+    if (apiKey.startsWith('test_') || apiKey.toLowerCase().includes('mock')) {
+      return isTestRuntime()
+        ? { valid: true }
+        : { valid: false, error: 'Placeholder/test API keys are allowed only in automated tests. Enter a real Gemini API key.' };
     }
 
     try {
@@ -41,7 +45,7 @@ export class GeminiAdapter implements AiProviderAdapter {
     const { incomingMessage, leadName, config } = params;
     const targetModel = config.model || 'gemini-1.5-flash';
 
-    if (config.apiKey && (config.apiKey.startsWith('test_') || config.apiKey.includes('mock'))) {
+    if (config.apiKey && (config.apiKey.startsWith('test_') || config.apiKey.toLowerCase().includes('mock')) && isTestRuntime()) {
       return {
         success: true,
         replyText: `Hello ${leadName || 'valued customer'}! Thanks for contacting us. We received your note: "${incomingMessage}". Let us assist you with that today.`,
@@ -49,6 +53,10 @@ export class GeminiAdapter implements AiProviderAdapter {
         tokensUsed: 38,
         model: targetModel,
       };
+    }
+
+    if (config.apiKey && (config.apiKey.startsWith('test_') || config.apiKey.toLowerCase().includes('mock'))) {
+      return { success: false, confidence: 0, model: targetModel, error: 'Placeholder/test API keys cannot be used outside automated tests.' };
     }
 
     const promptText = `
