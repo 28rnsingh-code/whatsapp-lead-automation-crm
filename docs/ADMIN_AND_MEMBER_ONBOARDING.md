@@ -41,4 +41,4 @@ These are the product’s configured plan values, not confirmation that payment 
 
 ## Release safety
 
-Before giving clients access, configure the production database and secrets, rotate any bootstrap Admin password, review dependency security alerts, run the complete CI suite, verify the deployed login/lead/team journeys and provider webhooks, and prepare rollback. A successful CI run alone does not prove a live deployment is ready.
+Before giving clients access, configure the production database and secrets, set a unique production `BOOTSTRAP_ADMIN_PASSWORD` before first seed, and rotate any existing bootstrap Admin password, review dependency security alerts, run the complete CI suite, verify the deployed login/lead/team journeys and provider webhooks, and prepare rollback. A successful CI run alone does not prove a live deployment is ready.
