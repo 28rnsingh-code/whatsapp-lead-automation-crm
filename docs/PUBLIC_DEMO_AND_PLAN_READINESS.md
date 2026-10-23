@@ -21,19 +21,19 @@ Required for a production deployment:
 - `PUBLIC_DEMO_ENABLED`: set `false` to disable public demo login.
 - `PUBLIC_DEMO_PASSWORD`: optional override for the public password. Because a shared demo password is disclosed in the site UI, this is not a secret and does not protect admin functions.
 
-The public demo account is created/updated by `server/src/db/seed.ts`. The DB migration `003_demo_usage_sessions.sql` must run before the demo can track usage. Never copy demo credentials into the admin or customer account.
+The public demo account is created/updated by `server/src/db/seed.ts`. The DB migrations `003_demo_usage_sessions.sql` through `007_monthly_usage_backfill.sql` must run before demo quotas, plan usage and billing idempotency are fully available. Never copy demo credentials into the admin or customer account.
 
 ## Current monthly tiers in code
 
 These are the values currently defined in `server/src/services/billing/types.ts`; seat caps are also enforced by the tenant-scoped team API. They are not a payment checkout confirmation.
 
-| Plan | Current price/month | Current lead limit | Current WhatsApp message quota | Current imports/month |
-|---|---:|---:|---:|---:|
+| Plan | Current price/month | Team seats | Active leads | WhatsApp messages/month | Imports/month |
+|---|---:|---:|---:|---:|---:|
 | Starter | ₹2,999 | 2 | 1,000 | 500 | 10 |
 | Growth | ₹7,999 | 5 | 10,000 | 5,000 | 100 |
 | Enterprise | ₹19,999 | 10 | 100,000 | 50,000 | 1,000 |
 
-Current subscription controls update CRM entitlements in sandbox/mock mode only. They do not collect payment. Live checkout, verified payment webhooks, invoice/tax handling, renewal/cancellation and delinquency suspension must be configured and tested before selling subscriptions. An email allowance/rate is not part of the current plan schema. Do not advertise a free customer email allowance: demo sends are simulated, and real email sends should remain disabled until the business defines included volume/overage charging and configures a verified provider. The free tiers from email providers are development/operational constraints, not a customer-facing product plan.
+Current subscription controls update CRM entitlements in sandbox/mock mode only. They do not collect payment. Stripe webhooks now require signature verification and are idempotent, but a real checkout/session creator, provider account, live event mapping and signed staging verification are not configured. Razorpay is not implemented. Invoice/tax handling, renewal/cancellation and delinquency suspension must be configured and tested before selling subscriptions. An email allowance/rate is not part of the current plan schema. Do not advertise a free customer email allowance: demo sends are simulated, and real email sends should remain disabled until the business defines included volume/overage charging and configures a verified provider. The free tiers from email providers are development/operational constraints, not a customer-facing product plan.
 
 ## Email
 
@@ -47,5 +47,6 @@ Before production:
 3. Configure and verify remote DB, JWT secret, frontend API URL, allowed origins and public demo toggle.
 4. Change the bootstrap admin password; no default admin credential may remain in production.
 5. Configure real Meta credentials and webhook verification; perform an opt-in test delivery with a controlled recipient.
-6. Add/verify real team invitation, password reset email, seat enforcement and plan change permissions.
-7. Test end-to-end browser journeys and tenant isolation in a deployed preview. A successful build alone is not a production sign-off.
+6. Configure `STRIPE_WEBHOOK_SECRET` only if Stripe is selected; mock billing webhooks are test-only and Razorpay remains unsupported. Verify real signed Stripe test events before enabling any production webhook.
+7. Verify real transactional email for member invitations and password reset; these are not wired to a sender yet. Confirm platform-level plan-change authorization before connecting live checkout.
+8. Test end-to-end browser journeys and tenant isolation in a deployed preview. A successful build alone is not a production sign-off.
