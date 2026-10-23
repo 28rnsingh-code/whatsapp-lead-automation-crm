@@ -10,3 +10,6 @@ ALTER TABLE leads
 
 ALTER TABLE leads
   ALTER COLUMN consent_status SET DEFAULT 'Unknown';
+
+ALTER TABLE whatsapp_messages
+  ADD COLUMN IF NOT EXISTS idempotency_request_hash VARCHAR(64);
