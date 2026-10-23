@@ -42,6 +42,7 @@ export interface SessionContext {
   tenant: Tenant;
   role: RoleName;
   permissions: string[];
+  mustChangePassword?: boolean;
 }
 
 export type LeadSource = 'Website' | 'WhatsApp' | 'Google Ads' | 'Referral' | 'Direct' | 'Other';
