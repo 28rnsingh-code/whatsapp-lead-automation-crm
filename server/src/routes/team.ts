@@ -70,12 +70,13 @@ router.get('/members', requireAuth, requireTenant(['Admin']), async (req: Reques
     ]);
     const storedLimits = plan.rows[0]?.limits;
     const limits = typeof storedLimits === 'string' ? JSON.parse(storedLimits) : storedLimits;
-    const planId = plan.rows[0]?.plan_id in PLAN_DEFINITIONS ? plan.rows[0].plan_id as PlanTier : 'starter';
+    const storedPlanId = plan.rows[0]?.plan_id;
+    const planId: PlanTier = storedPlanId && storedPlanId in PLAN_DEFINITIONS ? storedPlanId as PlanTier : 'starter';
     const maxMembers = Number(limits?.maxMembers) || PLAN_DEFINITIONS[planId].limits.maxMembers;
     res.json({
       success: true,
-      data: members.rows,
-      meta: { requestId: requestId(req), totalCount: members.rows.length, maxMembers, planId, remainingSeats: Math.max(0, maxMembers - members.rows.filter((m: any) => m.membershipStatus === 'active' && m.accountStatus === 'active').length) },
+      data: { members: members.rows, maxMembers, planId, remainingSeats: Math.max(0, maxMembers - members.rows.filter((m: any) => m.membershipStatus === 'active' && m.accountStatus === 'active').length) },
+      meta: { requestId: requestId(req), totalCount: members.rows.length },
     });
   } catch (error) {
     console.error('[Team] Member listing failed', { requestId: requestId(req), error });
@@ -136,8 +137,8 @@ router.post('/members', requireAuth, requireTenant(['Admin']), async (req: Reque
       return;
     }
 
-    const existing = await client.query<{ id: string; password_hash: string | null; must_change_password: boolean }>(
-      'SELECT id, password_hash, must_change_password FROM users WHERE email_normalized = $1 LIMIT 1',
+    const existing = await client.query<{ id: string; password_hash: string | null; must_change_password: boolean; status: string }>(
+      'SELECT id, password_hash, must_change_password, status FROM users WHERE email_normalized = $1 LIMIT 1',
       [email],
     );
     let userId: string;
@@ -145,6 +146,11 @@ router.post('/members', requireAuth, requireTenant(['Admin']), async (req: Reque
     let createdNewAccount = false;
 
     if (existing.rows[0]) {
+      if (existing.rows[0].status !== 'active') {
+        await client.query('ROLLBACK');
+        fail(res, 409, 'ACCOUNT_NOT_ACTIVE', 'This email belongs to an account that is not active. Resolve its account status before adding it.', id);
+        return;
+      }
       userId = existing.rows[0].id;
       const alreadyMember = await client.query(
         'SELECT 1 FROM memberships WHERE tenant_id = $1 AND user_id = $2 LIMIT 1',
