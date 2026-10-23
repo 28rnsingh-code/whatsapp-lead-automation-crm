@@ -11,7 +11,6 @@ import {
   decryptSecret,
 } from '../services/ai/aiRegistry';
 import { AiConfig } from '../services/ai/types';
-import { getWhatsAppAdapter } from '../services/whatsapp/adapterRegistry';
 
 const router = Router();
 
@@ -19,6 +18,11 @@ const TENANT_UUID_MAP: Record<string, string> = {
   tenant_bring_my_bite: DEFAULT_TENANT_ID,
   tenant_automics_labs: 'a0000000-0000-0000-0000-000000000002',
 };
+
+function isTestFixtureMode(): boolean {
+  return (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') &&
+    resolveDatabaseConfig().isBlocked;
+}
 
 function toDbTenantId(id: string): string {
   if (!id) return DEFAULT_TENANT_ID;
@@ -45,31 +49,34 @@ const IN_MEMORY_AI_CONFIGS: Record<string, AiConfig> = {
   },
 };
 
-// 1. GET /api/ai/config - Fetch Tenant AI Settings (Masked)
+// 1. GET /api/ai/config - Fetch persistent tenant AI Settings (Masked)
 router.get('/config', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const rawTenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
   const dbConfig = resolveDatabaseConfig();
 
-  if (dbConfig.isBlocked) {
-    const raw = IN_MEMORY_AI_CONFIGS[rawTenantId] || {
+  if (isTestFixtureMode()) {
+    const fixture = IN_MEMORY_AI_CONFIGS[rawTenantId] || {
       provider: 'mock',
       model: 'mock-fast-reply',
-      mode: 'draft_only',
+      mode: 'disabled',
       confidenceThreshold: 0.75,
       maxOutputChars: 300,
       enabled: false,
       status: 'unconfigured',
     };
-
     res.json({
       success: true,
-      data: {
-        config: maskAiConfig(raw as AiConfig),
-        supportedProviders: getAllSupportedAiProviders(),
-      },
-      meta: { requestId },
+      data: { config: maskAiConfig(fixture as AiConfig), supportedProviders: getAllSupportedAiProviders() },
+      meta: { requestId, source: 'test-fixture' },
+    });
+    return;
+  }
+  if (dbConfig.isBlocked) {
+    res.status(503).json({
+      success: false,
+      error: { code: 'AI_CONFIG_UNAVAILABLE', message: 'Persistent database configuration is unsafe or unavailable.', requestId },
     });
     return;
   }
@@ -77,57 +84,55 @@ router.get('/config', requireAuth, requireTenant(), async (req: Request, res: Re
   try {
     const result = await pool.query(
       `SELECT config_data FROM tenant_settings WHERE tenant_id = $1 AND category = 'ai' LIMIT 1;`,
-      [tenantId]
+      [tenantId],
     );
-
     let raw: any = {
       provider: 'openai',
       model: 'gpt-4o-mini',
-      mode: 'draft_only',
+      mode: 'disabled',
       confidenceThreshold: 0.8,
       maxOutputChars: 300,
       enabled: false,
       status: 'unconfigured',
     };
-
     if (result.rows.length > 0) {
-      raw = result.rows[0].config_data;
-      if (raw.apiKey) raw.apiKey = decryptSecret(raw.apiKey);
+      raw = typeof result.rows[0].config_data === 'string'
+        ? JSON.parse(result.rows[0].config_data)
+        : result.rows[0].config_data;
+      if (raw.apiKey) raw.apiKey = decryptSecret(String(raw.apiKey));
     }
-
     res.json({
       success: true,
-      data: {
-        config: maskAiConfig(raw as AiConfig),
-        supportedProviders: getAllSupportedAiProviders(),
-      },
+      data: { config: maskAiConfig(raw as AiConfig), supportedProviders: getAllSupportedAiProviders() },
       meta: { requestId },
     });
-  } catch (error: any) {
-    res.json({
-      success: true,
-      data: {
-        config: maskAiConfig({
-          provider: 'mock',
-          model: 'mock-fast-reply',
-          mode: 'disabled',
-          confidenceThreshold: 0.75,
-          maxOutputChars: 300,
-          enabled: false,
-          status: 'unconfigured',
-        }),
-        supportedProviders: getAllSupportedAiProviders(),
-      },
-      meta: { requestId },
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[AI Config] Read failed', { requestId, errorCode });
+    res.status(503).json({
+      success: false,
+      error: { code: 'AI_CONFIG_UNAVAILABLE', message: 'Saved AI settings could not be loaded. Please retry.', requestId },
     });
   }
 });
 
-// 2. POST /api/ai/config - Save & Verify Tenant AI Settings
+// 2. POST /api/ai/config - Validate and persist tenant AI settings
 router.post('/config', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const rawTenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
+  const dbConfig = resolveDatabaseConfig();
+
+  if (dbConfig.isBlocked && !isTestFixtureMode()) {
+    res.status(503).json({
+      success: false,
+      error: { code: 'AI_CONFIG_UNAVAILABLE', message: 'Persistent database configuration is unsafe or unavailable.', requestId },
+    });
+    return;
+  }
+
   const {
     provider = 'openai',
     apiKey,
@@ -138,19 +143,34 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
     confidenceThreshold = 0.8,
     maxOutputChars = 250,
     enabled = true,
-  } = req.body;
+  } = req.body || {};
 
-  const adapter = getAiAdapter(provider);
+  let adapter;
+  try {
+    adapter = getAiAdapter(provider);
+  } catch {
+    res.status(400).json({
+      success: false,
+      error: { code: 'AI_PROVIDER_UNSUPPORTED', message: 'This AI provider is not implemented in this release.', requestId },
+    });
+    return;
+  }
+
   let validation: { valid: boolean; error?: string } = { valid: true };
-
   if (apiKey) {
-    const keyCheck = await adapter.validateKey(apiKey, model);
+    const keyCheck = await adapter.validateKey(String(apiKey), String(model));
     validation = { valid: keyCheck.valid, error: keyCheck.error };
   } else if (enabled && provider !== 'mock') {
     validation = { valid: false, error: 'API key is required when enabling external AI providers.' };
   }
+  if (!validation.valid) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'AI_CREDENTIALS_INVALID', message: validation.error || 'AI provider credentials were not verified; settings were not saved.', requestId },
+    });
+    return;
+  }
 
-  const status = validation.valid ? 'active' : 'error';
   const newConfig: AiConfig = {
     provider,
     apiKey,
@@ -161,21 +181,16 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
     confidenceThreshold: Number(confidenceThreshold) || 0.75,
     maxOutputChars: Number(maxOutputChars) || 250,
     enabled: !!enabled,
-    status,
-    errorMessage: validation.error,
+    status: 'active',
     lastTestedAt: new Date().toISOString(),
   };
 
-  const dbConfig = resolveDatabaseConfig();
-  if (dbConfig.isBlocked) {
+  if (isTestFixtureMode()) {
     IN_MEMORY_AI_CONFIGS[rawTenantId] = newConfig;
     res.json({
       success: true,
-      data: {
-        config: maskAiConfig(newConfig),
-        validation,
-      },
-      meta: { requestId },
+      data: { config: maskAiConfig(newConfig), validation },
+      meta: { requestId, source: 'test-fixture' },
     });
     return;
   }
@@ -183,42 +198,40 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
   try {
     const encryptedData = {
       ...newConfig,
-      apiKey: apiKey ? encryptSecret(apiKey) : undefined,
+      apiKey: apiKey ? encryptSecret(String(apiKey)) : undefined,
     };
-
     await pool.query(
       `INSERT INTO tenant_settings (tenant_id, category, config_data, updated_at)
        VALUES ($1, 'ai', $2, NOW())
        ON CONFLICT (tenant_id, category)
        DO UPDATE SET config_data = $2, updated_at = NOW();`,
-      [tenantId, JSON.stringify(encryptedData)]
+      [tenantId, JSON.stringify(encryptedData)],
     );
-
     res.json({
       success: true,
-      data: {
-        config: maskAiConfig(newConfig),
-        validation,
-      },
+      data: { config: maskAiConfig(newConfig), validation },
       meta: { requestId },
     });
-  } catch (error: any) {
-    if (error.name === 'DatabaseSafetyError') {
-      res.status(503).json({ success: false, error: { code: 'DATABASE_SAFETY_BLOCKED', message: error.message, requestId } });
-      return;
-    }
-    res.status(500).json({ success: false, error: { code: 'DATABASE_ERROR', message: error.message, requestId } });
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[AI Config] Save failed', { requestId, errorCode });
+    res.status(503).json({
+      success: false,
+      error: { code: 'AI_CONFIG_SAVE_FAILED', message: 'AI settings could not be saved to persistent storage.', requestId },
+    });
   }
 });
 
-// 3. POST /api/ai/generate-reply - Generate Contextual AI Response
+// 3. POST /api/ai/generate-reply - Generate a draft from saved tenant configuration.
 router.post('/generate-reply', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const rawTenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
-  const { incomingMessage, leadName, companyName, conversationHistory } = req.body;
+  const { incomingMessage, leadName, companyName, conversationHistory } = req.body || {};
 
-  if (!incomingMessage || !incomingMessage.trim()) {
+  if (typeof incomingMessage !== 'string' || !incomingMessage.trim()) {
     res.status(400).json({
       success: false,
       error: { code: 'VALIDATION_ERROR', message: 'Incoming customer message is required.', requestId },
@@ -226,95 +239,111 @@ router.post('/generate-reply', requireAuth, requireTenant(), async (req: Request
     return;
   }
 
-  // Load tenant AI config
-  const raw = IN_MEMORY_AI_CONFIGS[rawTenantId] || {
-    provider: 'mock',
-    model: 'mock-fast-reply',
-    mode: 'draft_only',
-    systemPrompt: 'You are an intelligent CRM assistant.',
-    businessContext: '',
-    confidenceThreshold: 0.75,
-    maxOutputChars: 250,
-    enabled: true,
-  };
+  let raw: any = null;
+  if (isTestFixtureMode()) {
+    raw = IN_MEMORY_AI_CONFIGS[rawTenantId] || null;
+  } else {
+    if (resolveDatabaseConfig().isBlocked) {
+      res.status(503).json({
+        success: false,
+        error: { code: 'AI_CONFIG_UNAVAILABLE', message: 'Persistent AI settings are unavailable. No reply was generated.', requestId },
+      });
+      return;
+    }
+    try {
+      const result = await pool.query(
+        `SELECT config_data FROM tenant_settings WHERE tenant_id = $1 AND category = 'ai' LIMIT 1;`,
+        [tenantId],
+      );
+      if (result.rows.length) {
+        raw = typeof result.rows[0].config_data === 'string'
+          ? JSON.parse(result.rows[0].config_data)
+          : result.rows[0].config_data;
+        if (raw.apiKey) raw.apiKey = decryptSecret(String(raw.apiKey));
+      }
+    } catch (error) {
+      const errorCode = error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+        : 'DATABASE_ERROR';
+      console.error('[AI Reply] Configuration lookup failed', { requestId, errorCode });
+      res.status(503).json({
+        success: false,
+        error: { code: 'AI_CONFIG_UNAVAILABLE', message: 'Saved AI settings could not be loaded. No reply was generated.', requestId },
+      });
+      return;
+    }
+  }
 
-  if (!raw.enabled || raw.mode === 'disabled') {
-    res.status(400).json({
+  if (!raw || raw.status === 'error' || raw.status === 'unconfigured' || !raw.enabled || raw.mode === 'disabled') {
+    res.status(409).json({
       success: false,
-      error: { code: 'AI_DISABLED', message: 'AI auto-reply is currently disabled for this tenant.', requestId },
+      error: { code: 'AI_NOT_CONFIGURED', message: 'Configure and verify an enabled AI provider before generating a reply.', requestId },
     });
     return;
   }
 
-  const adapter = getAiAdapter(raw.provider);
-  const result = await adapter.generateReply({
-    tenantId,
-    leadName,
-    companyName,
-    incomingMessage: incomingMessage.trim(),
-    conversationHistory,
-    config: raw as AiConfig,
-  });
+  let adapter;
+  try {
+    adapter = getAiAdapter(raw.provider);
+  } catch {
+    res.status(409).json({
+      success: false,
+      error: { code: 'AI_PROVIDER_UNSUPPORTED', message: 'The saved AI provider is not implemented in this release.', requestId },
+    });
+    return;
+  }
 
-  if (!result.success) {
+  try {
+    const result = await adapter.generateReply({
+      tenantId,
+      leadName,
+      companyName,
+      incomingMessage: incomingMessage.trim(),
+      conversationHistory,
+      config: raw as AiConfig,
+    });
+    if (!result.success) {
+      res.status(502).json({
+        success: false,
+        error: { code: 'AI_GENERATION_FAILED', message: result.error || 'Failed to generate AI response.', requestId },
+      });
+      return;
+    }
+
+    const passesThreshold = result.confidence >= (raw.confidenceThreshold || 0.75);
+    res.json({
+      success: true,
+      data: {
+        replyText: result.replyText,
+        confidence: result.confidence,
+        tokensUsed: result.tokensUsed,
+        model: result.model,
+        mode: raw.mode,
+        passesThreshold,
+        requiresApproval: raw.mode !== 'automatic_send',
+      },
+      meta: { requestId },
+    });
+  } catch (error) {
+    console.error('[AI Reply] Provider adapter failed unexpectedly', { requestId });
     res.status(502).json({
       success: false,
-      error: { code: 'AI_GENERATION_FAILED', message: result.error || 'Failed to generate AI response.', requestId },
+      error: { code: 'AI_GENERATION_FAILED', message: 'AI provider request failed unexpectedly.', requestId },
     });
-    return;
   }
-
-  // Check confidence threshold
-  const passesThreshold = result.confidence >= (raw.confidenceThreshold || 0.75);
-
-  res.json({
-    success: true,
-    data: {
-      replyText: result.replyText,
-      confidence: result.confidence,
-      tokensUsed: result.tokensUsed,
-      model: result.model,
-      mode: raw.mode,
-      passesThreshold,
-      requiresApproval: raw.mode !== 'automatic_send',
-    },
-    meta: { requestId },
-  });
 });
 
-// 4. POST /api/ai/approve-reply - Approve Draft & Dispatch to WhatsApp
-router.post('/approve-reply', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
-  const tenantId = toDbTenantId(req.tenantContext!.tenantId);
-  const requestId = req.requestId || 'req_unknown';
-  const { recipientPhone, replyText, leadId } = req.body;
-
-  if (!recipientPhone || !replyText) {
-    res.status(400).json({
-      success: false,
-      error: { code: 'VALIDATION_ERROR', message: 'Recipient phone and reply text are required.', requestId },
-    });
-    return;
-  }
-
-  // Dispatch via WhatsApp adapter
-  const adapter = getWhatsAppAdapter('mock');
-  const sendResult = await adapter.sendMessage({
-    tenantId,
-    recipientPhone,
-    messageType: 'text',
-    body: replyText,
-    leadId,
-    credentials: { provider: 'mock' },
-  });
-
-  res.json({
-    success: true,
-    data: {
-      message: 'AI response approved and dispatched successfully.',
-      providerMessageId: sendResult.providerMessageId,
-      status: sendResult.status,
+// 4. POST /api/ai/approve-reply - Disabled legacy endpoint.
+// Approved drafts must go through POST /api/whatsapp/messages, where consent,
+// template and 24-hour-window rules plus idempotency are enforced.
+router.post('/approve-reply', requireAuth, requireTenant(), (req: Request, res: Response): void => {
+  res.status(410).json({
+    success: false,
+    error: {
+      code: 'AI_APPROVAL_ROUTE_DISABLED',
+      message: 'This legacy route does not send messages. Use the WhatsApp message endpoint so consent, messaging-window, and duplicate-send checks are applied.',
+      requestId: req.requestId || 'req_unknown',
     },
-    meta: { requestId },
   });
 });
 
