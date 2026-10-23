@@ -661,6 +661,15 @@ router.get('/templates', requireAuth, requireTenant(), async (req: Request, res:
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const requestId = req.requestId || 'req_unknown';
 
+  if (res.locals.demoMode === true) {
+    res.json({
+      success: true,
+      data: PREDEFINED_TEMPLATES.map(template => ({ ...template, status: 'DEMO SAMPLE' })),
+      meta: { totalCount: PREDEFINED_TEMPLATES.length, requestId, demoMode: true, source: 'demo-fixture' },
+    });
+    return;
+  }
+
   if (isTestRuntime()) {
     res.json({ success: true, data: PREDEFINED_TEMPLATES, meta: { totalCount: PREDEFINED_TEMPLATES.length, requestId, source: 'test-fixture' } });
     return;
