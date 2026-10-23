@@ -145,6 +145,21 @@ router.post('/config', requireAuth, requireTenant(), async (req: Request, res: R
     enabled = true,
   } = req.body || {};
 
+  if (mode === 'automatic_send') {
+    res.status(409).json({
+      success: false,
+      error: { code: 'AI_AUTOMATIC_SEND_UNSUPPORTED', message: 'Automatic sending is disabled in this release. Use draft-only or approval-required mode so every outbound message passes WhatsApp consent, template, and messaging-window checks.', requestId },
+    });
+    return;
+  }
+  if (!['disabled', 'draft_only', 'approval_before_send'].includes(mode)) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'AI_MODE_INVALID', message: 'Choose a supported AI mode.', requestId },
+    });
+    return;
+  }
+
   let adapter;
   try {
     adapter = getAiAdapter(provider);
@@ -274,6 +289,13 @@ router.post('/generate-reply', requireAuth, requireTenant(), async (req: Request
     }
   }
 
+  if (raw?.mode === 'automatic_send') {
+    res.status(409).json({
+      success: false,
+      error: { code: 'AI_AUTOMATIC_SEND_UNSUPPORTED', message: 'The saved AI settings use automatic-send mode, which this release does not execute. Change the setting to approval-required mode before generating replies.', requestId },
+    });
+    return;
+  }
   if (!raw || raw.status === 'error' || raw.status === 'unconfigured' || !raw.enabled || raw.mode === 'disabled') {
     res.status(409).json({
       success: false,
@@ -320,7 +342,7 @@ router.post('/generate-reply', requireAuth, requireTenant(), async (req: Request
         model: result.model,
         mode: raw.mode,
         passesThreshold,
-        requiresApproval: raw.mode !== 'automatic_send',
+        requiresApproval: true,
       },
       meta: { requestId },
     });
