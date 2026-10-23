@@ -119,21 +119,72 @@ describe('Phase 5 & 6: Advanced Reporting, Usage Metering & SaaS Billing Tests',
       }
     });
 
-    it('POST /api/billing/webhook processes subscription events idempotently', async () => {
-      const res = await request(app)
+    it('POST /api/billing/webhook processes mock events once and ignores duplicates', async () => {
+      const payload = {
+        eventId: `evt_test_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        eventType: 'subscription.renewed',
+        tenantId: 'tenant_bring_my_bite',
+        planId: 'growth',
+        status: 'active',
+      };
+
+      const first = await request(app)
         .post('/api/billing/webhook')
         .set('x-billing-provider', 'mock')
-        .send({
-          eventId: `evt_test_${Date.now()}`,
-          eventType: 'subscription.renewed',
-          tenantId: 'tenant_bring_my_bite',
-          planId: 'growth',
-          status: 'active',
-        });
+        .send(payload);
 
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.processed).toBe(true);
+      expect(first.status).toBe(200);
+      expect(first.body.success).toBe(true);
+      expect(first.body.processed).toBe(true);
+      expect(first.body.duplicate).toBe(false);
+
+      const retry = await request(app)
+        .post('/api/billing/webhook')
+        .set('x-billing-provider', 'mock')
+        .send(payload);
+
+      expect(retry.status).toBe(200);
+      expect(retry.body.success).toBe(true);
+      expect(retry.body.processed).toBe(false);
+      expect(retry.body.duplicate).toBe(true);
+    });
+
+    it('rejects missing or invalid Stripe webhook signatures', async () => {
+      const oldSecret = process.env.STRIPE_WEBHOOK_SECRET;
+      process.env.STRIPE_WEBHOOK_SECRET = 'test_stripe_webhook_secret';
+      try {
+        const res = await request(app)
+          .post('/api/billing/webhook')
+          .set('x-billing-provider', 'stripe')
+          .set('stripe-signature', 't=1780000000,v1=not-a-valid-signature')
+          .send({
+            id: `evt_invalid_${Date.now()}`,
+            type: 'customer.subscription.updated',
+            created: Math.floor(Date.now() / 1000),
+            data: {
+              object: {
+                status: 'active',
+                metadata: { tenantId: 'tenant_bring_my_bite', planId: 'growth' },
+              },
+            },
+          });
+        expect(res.status).toBe(401);
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('BILLING_SIGNATURE_INVALID');
+      } finally {
+        if (oldSecret === undefined) delete process.env.STRIPE_WEBHOOK_SECRET;
+        else process.env.STRIPE_WEBHOOK_SECRET = oldSecret;
+      }
+    });
+
+    it('rejects Razorpay until a real signature-verifying adapter is implemented', async () => {
+      const res = await request(app)
+        .post('/api/billing/webhook')
+        .set('x-billing-provider', 'razorpay')
+        .set('x-razorpay-signature', 'placeholder')
+        .send({ eventId: 'evt_razorpay_unsupported', tenantId: 'tenant_bring_my_bite', planId: 'growth' });
+      expect(res.status).toBe(501);
+      expect(res.body.error.code).toBe('BILLING_PROVIDER_UNSUPPORTED');
     });
 
     it('enforces tenant isolation across metrics and subscriptions', async () => {
