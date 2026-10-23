@@ -41,8 +41,8 @@ export const AuthPage: React.FC = () => {
     const formData = new FormData(form);
     const recoveryEmail = String(formData.get('recoveryEmail') || '').trim();
     try {
-      const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\\/+$/, '');
-      const apiBase = /^https?:\\/\\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
+      const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+      const apiBase = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
         ? `${configuredApiBase}/api`
         : configuredApiBase;
       const res = await fetch(`${apiBase}/auth/forgot-password`, {
