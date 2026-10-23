@@ -64,6 +64,22 @@ export async function demoActionQuota(req: Request, res: Response, next: NextFun
 
   if (req.method === 'GET' && path === '/demo/usage') {
     try {
+      const membership = await pool.query(
+        `SELECT 1
+         FROM memberships m
+         JOIN users u ON u.id = m.user_id
+         JOIN tenants t ON t.id = m.tenant_id
+         WHERE m.user_id = $1 AND u.email_normalized = $2
+           AND m.tenant_id = $3 AND m.status = 'active'
+           AND u.status = 'active' AND t.status = 'active'
+           AND t.slug = 'public-demo'
+         LIMIT 1`,
+        [payload.userId, payload.email.trim().toLowerCase(), PUBLIC_DEMO_TENANT_ID],
+      );
+      if (membership.rowCount !== 1) {
+        res.status(403).json({ success: false, error: { code: 'DEMO_MEMBERSHIP_REQUIRED', message: 'A valid demo workspace membership is required.', requestId: req.requestId } });
+        return;
+      }
       const usage = await pool.query<{ action_count: number }>(
         'SELECT action_count FROM demo_usage_sessions WHERE tenant_id = $1 AND session_id = $2 LIMIT 1',
         [PUBLIC_DEMO_TENANT_ID, payload.demoSessionId],
@@ -86,6 +102,7 @@ export async function demoActionQuota(req: Request, res: Response, next: NextFun
       });
       return;
     }
+    res.locals.demoMode = true;
     return next();
   }
 
