@@ -86,6 +86,7 @@ async function buildSession(account: AuthRow): Promise<SessionContext> {
     },
     role: account.role_name as RoleName,
     permissions,
+    mustChangePassword: account.must_change_password,
   };
 }
 
@@ -155,7 +156,7 @@ router.get('/session', requireAuth, async (req: Request, res: Response): Promise
   try {
     const result = await pool.query<AuthRow>(
       `SELECT u.id AS user_id, u.email_normalized, u.display_name,
-              u.password_hash, u.status AS user_status, u.created_at AS user_created_at,
+              u.password_hash, u.must_change_password, u.status AS user_status, u.created_at AS user_created_at,
               t.id AS tenant_id, t.name AS tenant_name, t.slug AS tenant_slug,
               t.status AS tenant_status, t.timezone, t.currency, t.locale,
               t.created_at AS tenant_created_at, t.updated_at AS tenant_updated_at,
