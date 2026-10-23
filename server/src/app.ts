@@ -4,6 +4,7 @@ import { requestIdMiddleware, errorHandler } from './middleware/errorHandler';
 import healthRoutes from './routes/health';
 import authRoutes from './routes/auth';
 import workspaceRoutes from './routes/workspaces';
+import teamRoutes from './routes/team';
 import leadRoutes from './routes/leads';
 import pipelineRoutes from './routes/pipeline';
 import importExportRoutes from './routes/importExport';
@@ -46,6 +47,7 @@ export function createApp(): Express {
   app.use('/api', requirePasswordChangeCompletion);
   app.use('/api/auth', authRoutes);
   app.use('/api/workspaces', workspaceRoutes);
+  app.use('/api/team', teamRoutes);
   app.use('/api/audit', auditRoutes);
   app.use('/api/leads', leadRoutes);
   app.use('/api/pipeline', pipelineRoutes);
