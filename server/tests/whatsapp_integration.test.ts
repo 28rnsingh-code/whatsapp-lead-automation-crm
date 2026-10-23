@@ -179,6 +179,7 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
           businessAccountId: '1234567890123',
           accessToken: 'test_new_meta_token_98765',
           appSecret: 'test_app_secret_123',
+          webhookVerifyToken: 'test_webhook_verify_123',
         });
 
       expect([200, 503]).toContain(res.status);
