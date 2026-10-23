@@ -10,7 +10,10 @@ export const AuthPage: React.FC = () => {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const apiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+      const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+      const apiBase = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
+        ? `${configuredApiBase}/api`
+        : configuredApiBase;
       const res = await fetch(`${apiBase}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
