@@ -60,6 +60,9 @@ export const WhatsAppPage: React.FC = () => {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [messages, setMessages] = useState<WhatsAppMessageItem[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState<boolean>(false);
+  const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [messageRefreshKey, setMessageRefreshKey] = useState<number>(0);
   const [templates, setTemplates] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [sending, setSending] = useState<boolean>(false);
@@ -116,13 +119,36 @@ export const WhatsAppPage: React.FC = () => {
     setAiReplyIdempotencyKey(null);
   }, [selectedLead?.id]);
 
-  // Load messages for currently selected lead
+  // Load message history for the selected thread. Cancel stale responses
+  // so a slow previous request can never overwrite a more recent selection.
   useEffect(() => {
-    if (!selectedLead) return;
+    let cancelled = false;
+    setMessages([]);
+    setMessagesError(null);
+
+    if (!selectedLead) {
+      setMessagesLoading(false);
+      return () => { cancelled = true; };
+    }
+
+    setMessagesLoading(true);
     fetchWhatsAppMessagesApi(selectedLead.phoneRaw, selectedLead.id)
-      .then((msgs) => setMessages(msgs))
-      .catch(() => setMessages([]));
-  }, [selectedLead]);
+      .then((msgs) => {
+        if (cancelled) return;
+        setMessages(msgs);
+        setMessagesError(null);
+      })
+      .catch((error: any) => {
+        if (cancelled) return;
+        setMessages([]);
+        setMessagesError(error instanceof Error ? error.message : 'Unable to load this conversation.');
+      })
+      .finally(() => {
+        if (!cancelled) setMessagesLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [selectedLead?.id, selectedLead?.phoneRaw, messageRefreshKey]);
 
   const consentIsValid = !!selectedLead &&
     selectedLead.consentStatus === 'Consented' &&
@@ -454,7 +480,22 @@ export const WhatsAppPage: React.FC = () => {
                 gap: '14px',
                 background: 'var(--surface-secondary, #f8faff)',
               }}>
-                {messages.length > 0 ? (
+                {messagesLoading ? (
+                  <div role="status" style={{ textAlign: 'center', margin: 'auto', color: 'var(--text-muted)', fontSize: '13px' }}>
+                    Loading conversation…
+                  </div>
+                ) : messagesError ? (
+                  <div role="alert" style={{ textAlign: 'center', margin: 'auto', color: 'var(--red-text, #b42318)', fontSize: '13px' }}>
+                    <p>Conversation could not be loaded: {messagesError}</p>
+                    <button
+                      type="button"
+                      className="btn btn-soft"
+                      onClick={() => setMessageRefreshKey((previous) => previous + 1)}
+                    >
+                      Retry loading messages
+                    </button>
+                  </div>
+                ) : messages.length > 0 ? (
                   messages.map((m) => {
                     const isOutbound = m.direction === 'outbound';
                     return (
