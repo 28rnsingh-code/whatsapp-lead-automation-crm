@@ -1,5 +1,7 @@
 import { AiProviderAdapter, GenerateReplyParams, GenerateReplyResult } from './types';
 
+function isTestRuntime(): boolean { return process.env.NODE_ENV === 'test' || process.env.VITEST === 'true'; }
+
 export class OpenAiAdapter implements AiProviderAdapter {
   readonly id = 'openai';
   readonly name = 'OpenAI (GPT-4o / GPT-4o-mini)';
@@ -13,8 +15,10 @@ export class OpenAiAdapter implements AiProviderAdapter {
       return { valid: false, error: 'Authentication failed: Invalid OpenAI API key.' };
     }
 
-    if (apiKey.startsWith('test_') || apiKey.includes('mock')) {
-      return { valid: true };
+    if (apiKey.startsWith('test_') || apiKey.toLowerCase().includes('mock')) {
+      return isTestRuntime()
+        ? { valid: true }
+        : { valid: false, error: 'Placeholder/test API keys are allowed only in automated tests. Enter a real OpenAI API key.' };
     }
 
     try {
@@ -34,7 +38,7 @@ export class OpenAiAdapter implements AiProviderAdapter {
   async generateReply(params: GenerateReplyParams): Promise<GenerateReplyResult> {
     const { incomingMessage, leadName, config } = params;
 
-    if (config.apiKey && (config.apiKey.startsWith('test_') || config.apiKey.includes('mock'))) {
+    if (config.apiKey && (config.apiKey.startsWith('test_') || config.apiKey.toLowerCase().includes('mock')) && isTestRuntime()) {
       return {
         success: true,
         replyText: `Hello ${leadName || 'valued customer'}, thanks for reaching out! Regarding "${incomingMessage}", our team is available to assist you right now.`,
@@ -42,6 +46,10 @@ export class OpenAiAdapter implements AiProviderAdapter {
         tokensUsed: 35,
         model: config.model || 'gpt-4o-mini',
       };
+    }
+
+    if (config.apiKey && (config.apiKey.startsWith('test_') || config.apiKey.toLowerCase().includes('mock'))) {
+      return { success: false, confidence: 0, model: config.model, error: 'Placeholder/test API keys cannot be used outside automated tests.' };
     }
 
     const messages = [
