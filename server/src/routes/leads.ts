@@ -654,6 +654,73 @@ router.patch('/:id', requireAuth, requireTenant(), async (req: Request, res: Res
   }
 });
 
+// Record explicit WhatsApp consent changes. Sending is allowed only when consent evidence is present.
+router.patch('/:id/consent', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
+  const tenantId = toDbTenantId(req.tenantContext!.tenantId);
+  const leadId = req.params.id;
+  const requestId = req.requestId || 'req_unknown';
+  const { consentStatus, consentSource } = req.body || {};
+  const supportedStatuses = new Set(['Consented', 'Unknown', 'Opted Out']);
+  const supportedSources = new Set(['website_form', 'whatsapp_inbound', 'phone_verbal', 'paper_form', 'email', 'other']);
+
+  if (!supportedStatuses.has(consentStatus)) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Consent status must be Consented, Unknown, or Opted Out.', requestId },
+    });
+    return;
+  }
+  if (consentStatus === 'Consented' && !supportedSources.has(consentSource)) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'CONSENT_EVIDENCE_REQUIRED', message: 'Choose how the customer explicitly granted WhatsApp consent before recording consent.', requestId },
+    });
+    return;
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE leads
+       SET consent_status = $1,
+           consent_source = CASE WHEN $1 = 'Consented' THEN $2 WHEN $1 = 'Opted Out' THEN 'customer_opt_out' ELSE NULL END,
+           consent_recorded_at = CASE WHEN $1 IN ('Consented', 'Opted Out') THEN NOW() ELSE NULL END,
+           opted_out_at = CASE WHEN $1 = 'Opted Out' THEN NOW() ELSE NULL END,
+           updated_at = NOW()
+       WHERE id::text = $3 AND tenant_id = $4
+       RETURNING id, consent_status as "consentStatus", consent_source as "consentSource",
+                 consent_recorded_at as "consentRecordedAt", opted_out_at as "optedOutAt"`,
+      [consentStatus, consentStatus === 'Consented' ? consentSource : null, leadId, tenantId],
+    );
+
+    if (!result.rows.length) {
+      res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Lead not found in this workspace.', requestId },
+      });
+      return;
+    }
+
+    await pool.query(
+      `INSERT INTO activities (tenant_id, entity_type, entity_id, activity_type, actor_user_id, summary)
+       VALUES ($1, 'lead', $2, 'whatsapp_consent_updated', $3, $4)`,
+      [tenantId, leadId, toDbUserId(req.userId), `WhatsApp consent status updated to "${consentStatus}".`],
+    ).catch((err) => {
+      console.warn('[Leads API] Consent activity logging skipped:', err.message);
+    });
+
+    res.json({ success: true, data: result.rows[0], meta: { requestId } });
+  } catch (error: any) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_ERROR')
+      : 'DATABASE_ERROR';
+    console.error('[Leads API] Consent update failed', { requestId, errorCode });
+    res.status(500).json({
+      success: false,
+      error: { code: 'CONSENT_UPDATE_FAILED', message: 'WhatsApp consent could not be updated.', requestId },
+    });
+  }
+});
+
 // 5. Delete / Archive Lead (DELETE /api/leads/:id)
 router.delete('/:id', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
