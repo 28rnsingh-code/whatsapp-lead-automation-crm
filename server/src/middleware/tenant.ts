@@ -41,16 +41,30 @@ export function requireTenant(allowedRoles?: RoleName[]) {
       return;
     }
 
-    // 2. Identify the target tenant requested
+    // 2. Identify the target tenant requested.
     const targetTenantId = (req.headers['x-tenant-id'] as string)?.trim();
 
-    // Reject reserved or known forbidden tenant identifiers immediately
     if (!targetTenantId || targetTenantId === 'forbidden_tenant') {
       res.status(403).json({
         success: false,
         error: {
           code: 'TENANT_ACCESS_DENIED',
           message: 'Access to the specified workspace is forbidden.',
+          requestId,
+        },
+      });
+      return;
+    }
+
+    // tenant_id is a PostgreSQL UUID. Reject legacy slugs before querying the database,
+    // otherwise PostgreSQL raises 22P02 and the API incorrectly reports a 503 outage.
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidPattern.test(targetTenantId)) {
+      res.status(401).json({
+        success: false,
+        error: {
+          code: 'SESSION_REAUTH_REQUIRED',
+          message: 'Your workspace session is outdated. Please sign in again.',
           requestId,
         },
       });
