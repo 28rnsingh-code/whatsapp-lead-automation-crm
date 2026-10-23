@@ -122,11 +122,53 @@ export function resolveDatabaseConfig(): DatabaseConfig {
     };
   }
 
-  // Development or Production runtime
-  const connStr = process.env.DATABASE_URL || 'postgresql://postgres:postgres_password@localhost:5432/oneclick_crm';
+  // Development or Production runtime. Never silently fall back to a local/demo
+  // database: on serverless hosts that can make the app appear to work while data
+  // disappears between invocations.
+  const connStr = (process.env.DATABASE_URL || '').trim();
+  if (!connStr) {
+    return {
+      connectionString: '',
+      databaseName: '',
+      isTestEnvironment: false,
+      isBlocked: true,
+      blockReason: 'DATABASE_URL is not configured. Persistent database access is disabled until a real PostgreSQL connection is configured.',
+    };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(connStr);
+    if (!['postgres:', 'postgresql:'].includes(parsed.protocol)) throw new Error('Unsupported protocol');
+  } catch {
+    return {
+      connectionString: connStr,
+      databaseName: parseDatabaseName(connStr),
+      isTestEnvironment: false,
+      isBlocked: true,
+      blockReason: 'DATABASE_URL is invalid. Provide a valid PostgreSQL connection URL.',
+    };
+  }
+
+  const dbName = parseDatabaseName(connStr);
+  const placeholder = /^(?:user|username|password|postgres_password|replace_me|changeme|example)$/i;
+  const hasPlaceholderCredentials = placeholder.test(decodeURIComponent(parsed.username || '')) ||
+    placeholder.test(decodeURIComponent(parsed.password || ''));
+  const host = parsed.hostname.toLowerCase();
+  const localHost = ['localhost', '127.0.0.1', '::1'].includes(host);
+  if (process.env.NODE_ENV === 'production' && (hasPlaceholderCredentials || localHost || !dbName)) {
+    return {
+      connectionString: connStr,
+      databaseName: dbName,
+      isTestEnvironment: false,
+      isBlocked: true,
+      blockReason: 'Production database configuration is unsafe: use a non-placeholder PostgreSQL URL pointing to the intended persistent database.',
+    };
+  }
+
   return {
     connectionString: connStr,
-    databaseName: parseDatabaseName(connStr),
+    databaseName: dbName,
     isTestEnvironment: false,
     isBlocked: false,
   };
