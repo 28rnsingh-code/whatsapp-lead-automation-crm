@@ -660,7 +660,7 @@ router.patch('/:id', requireAuth, requireTenant(), async (req: Request, res: Res
 });
 
 // Record explicit WhatsApp consent changes. Sending is allowed only when consent evidence is present.
-router.patch('/:id/consent', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
+router.patch('/:id/consent', requireAuth, requireTenant(['Admin', 'Sales Manager', 'Sales Executive']), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const leadId = req.params.id;
   const requestId = req.requestId || 'req_unknown';
