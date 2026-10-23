@@ -16,6 +16,7 @@ async function seedTestFixtures(): Promise<void> {
   const riyaUserId = 'b0000000-0000-0000-0000-000000000002';
   const otherUserId = 'b0000000-0000-0000-0000-000000000003';
   const suspendedUserId = 'b0000000-0000-0000-0000-000000000004';
+  const nonMemberUserId = 'b0000000-0000-0000-0000-000000000005';
 
   // Create the second workspace and its tenant-scoped roles only in the isolated test DB.
   await pool.query(
@@ -49,12 +50,20 @@ async function seedTestFixtures(): Promise<void> {
     {id:suspendedUserId,email:'suspended@bringmybite.in',name:'Suspended Test Member',tenantId:DEFAULT_TENANT_ID,role:'Sales',membership:'suspended'},
   ];
 
-  // Create the non-member identity without granting it membership in either workspace.
+  // Create the alternate-workspace member used by AI/reporting/WhatsApp tenant tests.
   await pool.query(
     `INSERT INTO users (id, email_normalized, display_name, password_hash, status)
      VALUES ($1, $2, $3, NULL, 'active')
      ON CONFLICT (email_normalized) DO UPDATE SET display_name = EXCLUDED.display_name`,
     [otherUserId, 'other@competitor.in', 'Other Tenant Test User']
+  );
+
+  // Keep a separate identity with deliberately no membership for negative authorization tests.
+  await pool.query(
+    `INSERT INTO users (id, email_normalized, display_name, password_hash, status)
+     VALUES ($1, $2, $3, NULL, 'active')
+     ON CONFLICT (email_normalized) DO UPDATE SET display_name = EXCLUDED.display_name`,
+    [nonMemberUserId, 'no-membership@bringmybite.test', 'No Membership Test User']
   );
 
   for (const u of userFixtures) {
