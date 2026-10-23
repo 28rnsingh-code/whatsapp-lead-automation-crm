@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { createHmac } from 'crypto';
 import request from 'supertest';
 import { createApp } from '../src/app';
 import { signToken } from '../src/services/authService';
+import { pool } from '../src/db';
+import { DEFAULT_TENANT_ID } from '../src/db/seed';
 import {
   getWhatsAppAdapter,
   maskSecret,
@@ -23,6 +26,61 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
     email: 'other@competitor.in',
     defaultTenantId: 'tenant_automics_labs',
   });
+
+  const configureTestWhatsApp = async () => {
+    const config = await request(app)
+      .post('/api/whatsapp/config')
+      .set('Authorization', `Bearer ${rohanToken}`)
+      .set('x-tenant-id', 'tenant_bring_my_bite')
+      .send({
+        provider: 'cloud_api',
+        phoneNumberId: '9876543210123',
+        businessAccountId: '1234567890123',
+        accessToken: 'test_new_meta_token_98765',
+        appSecret: 'test_app_secret_123',
+        webhookVerifyToken: 'test_webhook_verify_123',
+      });
+    expect(config.status).toBe(200);
+    expect(config.body.data.config.status).toBe('connected');
+  };
+
+  const createTestLead = async () => {
+    const suffix = String(Date.now()).slice(-9).padStart(9, '7');
+    const phoneDigits = `9${suffix}`;
+    const phone = `+91${phoneDigits}`;
+    const response = await request(app)
+      .post('/api/leads')
+      .set('Authorization', `Bearer ${rohanToken}`)
+      .set('x-tenant-id', 'tenant_bring_my_bite')
+      .send({
+        name: `WhatsApp Test Lead ${suffix}`,
+        phoneRaw: phone,
+        email: '',
+        companyName: 'QA Test Workspace',
+        source: 'WhatsApp',
+        dealValue: '0',
+        nextAction: 'WhatsApp follow-up',
+        notes: 'Isolated automated test data',
+      });
+    expect(response.status).toBe(201);
+    expect(response.body.data.consentStatus).toBe('Unknown');
+    return { lead: response.body.data, phone, phoneDigits };
+  };
+
+  const signWebhook = (payload: unknown) =>
+    `sha256=${createHmac('sha256', 'test_app_secret_123').update(JSON.stringify(payload)).digest('hex')}`;
+
+  const cleanupTestLead = async (leadId: string, phone: string) => {
+    await pool.query(
+      `DELETE FROM whatsapp_messages WHERE tenant_id = $1 AND (lead_id = $2 OR sender_phone = $3 OR recipient_phone = $3)`,
+      [DEFAULT_TENANT_ID, leadId, phone],
+    );
+    await pool.query(
+      `DELETE FROM activities WHERE tenant_id = $1 AND entity_id::text = $2`,
+      [DEFAULT_TENANT_ID, leadId],
+    );
+    await pool.query(`DELETE FROM leads WHERE tenant_id = $1 AND id::text = $2`, [DEFAULT_TENANT_ID, leadId]);
+  };
 
   describe('1. Secret Masking & Encryption at Rest Unit Tests', () => {
     it('masks secrets securely without exposing full credentials', () => {
@@ -145,34 +203,29 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
     });
 
     it('POST /api/whatsapp/webhook rejects unsigned events even when a tenant header is provided', async () => {
+      await configureTestWhatsApp();
       const res = await request(app)
         .post('/api/whatsapp/webhook')
         .set('x-tenant-id', 'tenant_bring_my_bite')
         .send({
           object: 'whatsapp_business_account',
-          entry: [
-            {
-              id: '209384756192834',
-              changes: [
-                {
-                  value: {
-                    messaging_product: 'whatsapp',
-                    metadata: { display_phone_number: '919999988888', phone_number_id: '109823475689123' },
-                    messages: [
-                      {
-                        from: '919876543210',
-                        id: `wamid.unsigned_${Date.now()}`,
-                        timestamp: `${Math.floor(Date.now() / 1000)}`,
-                        text: { body: 'Unsigned request must never be processed' },
-                        type: 'text',
-                      },
-                    ],
-                  },
-                  field: 'messages',
-                },
-              ],
-            },
-          ],
+          entry: [{
+            id: '209384756192834',
+            changes: [{
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { display_phone_number: '919999988888', phone_number_id: '9876543210123' },
+                messages: [{
+                  from: '919876543210',
+                  id: `wamid.unsigned_${Date.now()}`,
+                  timestamp: `${Math.floor(Date.now() / 1000)}`,
+                  text: { body: 'Unsigned request must never be processed' },
+                  type: 'text',
+                }],
+              },
+              field: 'messages',
+            }],
+          }],
         });
 
       expect(res.status).toBe(401);
@@ -180,28 +233,169 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
       expect(res.body.error.code).toBe('WEBHOOK_SIGNATURE_REQUIRED');
     });
 
+
   });
 
   describe('5. Outbound Messages & Templates', () => {
-    it('POST /api/whatsapp/messages sends message and enforces validation', async () => {
-      const res = await request(app)
-        .post('/api/whatsapp/messages')
-        .set('Authorization', `Bearer ${rohanToken}`)
-        .set('x-tenant-id', 'tenant_bring_my_bite')
-        .send({
-          recipientPhone: '+919876543210',
-          body: 'Hello from OneClick CRM automated test',
-        });
+    it('blocks sending without explicit consent and outside the 24-hour window, then deduplicates a valid send', async () => {
+      await configureTestWhatsApp();
+      const { lead, phone, phoneDigits } = await createTestLead();
+      try {
+        const noConsentSend = await request(app)
+          .post('/api/whatsapp/messages')
+          .set('Authorization', `Bearer ${rohanToken}`)
+          .set('x-tenant-id', 'tenant_bring_my_bite')
+          .send({
+            recipientPhone: phone,
+            body: 'Must not send without consent',
+            leadId: lead.id,
+            idempotencyKey: `consent-block-${lead.id}`,
+          });
+        expect(noConsentSend.status).toBe(403);
+        expect(noConsentSend.body.error.code).toBe('WHATSAPP_CONSENT_REQUIRED');
 
-      expect([201, 503]).toContain(res.status);
-      if (res.status === 201) {
-        expect(res.body.success).toBe(true);
-        expect(res.body.data.direction).toBe('outbound');
-        expect(res.body.data.status).toBe('sent');
+        const consent = await request(app)
+          .patch(`/api/leads/${lead.id}/consent`)
+          .set('Authorization', `Bearer ${rohanToken}`)
+          .set('x-tenant-id', 'tenant_bring_my_bite')
+          .send({ consentStatus: 'Consented', consentSource: 'website_form' });
+        expect(consent.status).toBe(200);
+        expect(consent.body.data.consentRecordedAt).toBeTruthy();
+
+        const closedWindowSend = await request(app)
+          .post('/api/whatsapp/messages')
+          .set('Authorization', `Bearer ${rohanToken}`)
+          .set('x-tenant-id', 'tenant_bring_my_bite')
+          .send({
+            recipientPhone: phone,
+            body: 'Must not send outside the customer-service window',
+            leadId: lead.id,
+            idempotencyKey: `window-block-${lead.id}`,
+          });
+        expect(closedWindowSend.status).toBe(409);
+        expect(closedWindowSend.body.error.code).toBe('WHATSAPP_TEMPLATE_REQUIRED');
+
+        const inboundPayload = {
+          object: 'whatsapp_business_account',
+          entry: [{
+            id: '209384756192834',
+            changes: [{
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { display_phone_number: '919999988888', phone_number_id: '9876543210123' },
+                messages: [{
+                  from: phoneDigits.length === 10 ? `91${phoneDigits}` : phoneDigits,
+                  id: `wamid.inbound_${lead.id}`,
+                  timestamp: `${Math.floor(Date.now() / 1000)}`,
+                  text: { body: 'Can you tell me more about the service?' },
+                  type: 'text',
+                }],
+              },
+              field: 'messages',
+            }],
+          }],
+        };
+        const inbound = await request(app)
+          .post('/api/whatsapp/webhook')
+          .set('x-hub-signature-256', signWebhook(inboundPayload))
+          .set('x-tenant-id', 'forged-tenant-header-is-ignored')
+          .send(inboundPayload);
+        expect(inbound.status).toBe(200);
+        expect(inbound.body.processed).toBe(1);
+
+        const body = {
+          recipientPhone: phone,
+          body: 'Hello from OneClick CRM automated test',
+          leadId: lead.id,
+          idempotencyKey: `send-once-${lead.id}`,
+        };
+        const first = await request(app)
+          .post('/api/whatsapp/messages')
+          .set('Authorization', `Bearer ${rohanToken}`)
+          .set('x-tenant-id', 'tenant_bring_my_bite')
+          .send(body);
+        expect(first.status).toBe(201);
+        expect(first.body.success).toBe(true);
+        expect(first.body.data.direction).toBe('outbound');
+        expect(first.body.data.status).toBe('sent');
+        expect(first.body.data.providerMessageId).toBeTruthy();
+
+        const replay = await request(app)
+          .post('/api/whatsapp/messages')
+          .set('Authorization', `Bearer ${rohanToken}`)
+          .set('x-tenant-id', 'tenant_bring_my_bite')
+          .send(body);
+        expect(replay.status).toBe(200);
+        expect(replay.body.meta.idempotentReplay).toBe(true);
+        expect(replay.body.data.providerMessageId).toBe(first.body.data.providerMessageId);
+
+        const statusPayload = {
+          object: 'whatsapp_business_account',
+          entry: [{
+            id: '209384756192834',
+            changes: [{
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { display_phone_number: '919999988888', phone_number_id: '9876543210123' },
+                statuses: [{
+                  id: first.body.data.providerMessageId,
+                  status: 'delivered',
+                  recipient_id: phoneDigits.length === 10 ? `91${phoneDigits}` : phoneDigits,
+                  timestamp: `${Math.floor(Date.now() / 1000)}`,
+                }],
+              },
+              field: 'messages',
+            }],
+          }],
+        };
+        const delivery = await request(app)
+          .post('/api/whatsapp/webhook')
+          .set('x-hub-signature-256', signWebhook(statusPayload))
+          .send(statusPayload);
+        expect(delivery.status).toBe(200);
+        expect(delivery.body.processed).toBe(1);
+
+        const stored = await pool.query(
+          `SELECT direction, status FROM whatsapp_messages WHERE tenant_id = $1 AND provider_message_id = $2`,
+          [DEFAULT_TENANT_ID, first.body.data.providerMessageId],
+        );
+        expect(stored.rows).toHaveLength(1);
+        expect(stored.rows[0].direction).toBe('outbound');
+        expect(stored.rows[0].status).toBe('delivered');
+
+        const threads = await request(app)
+          .get(`/api/whatsapp/messages?leadId=${encodeURIComponent(lead.id)}`)
+          .set('Authorization', `Bearer ${rohanToken}`)
+          .set('x-tenant-id', 'tenant_bring_my_bite');
+        expect(threads.status).toBe(200);
+        expect(threads.body.data.some((message: any) => message.direction === 'inbound' && message.body === 'Can you tell me more about the service?')).toBe(true);
+        expect(threads.body.data.some((message: any) => message.direction === 'inbound' && message.body === '')).toBe(false);
+
+        const optedOut = await request(app)
+          .patch(`/api/leads/${lead.id}/consent`)
+          .set('Authorization', `Bearer ${rohanToken}`)
+          .set('x-tenant-id', 'tenant_bring_my_bite')
+          .send({ consentStatus: 'Opted Out' });
+        expect(optedOut.status).toBe(200);
+
+        const afterOptOut = await request(app)
+          .post('/api/whatsapp/messages')
+          .set('Authorization', `Bearer ${rohanToken}`)
+          .set('x-tenant-id', 'tenant_bring_my_bite')
+          .send({
+            recipientPhone: phone,
+            body: 'Must not send after opt-out',
+            leadId: lead.id,
+            idempotencyKey: `optout-block-${lead.id}`,
+          });
+        expect(afterOptOut.status).toBe(403);
+        expect(afterOptOut.body.error.code).toBe('WHATSAPP_CONSENT_REQUIRED');
+      } finally {
+        await cleanupTestLead(lead.id, phone);
       }
     });
 
-    it('GET /api/whatsapp/templates returns approved templates', async () => {
+    it('returns only approved local template fixtures in test mode', async () => {
       const res = await request(app)
         .get('/api/whatsapp/templates')
         .set('Authorization', `Bearer ${rohanToken}`)
