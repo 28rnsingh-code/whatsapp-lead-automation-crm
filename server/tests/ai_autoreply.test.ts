@@ -126,6 +126,23 @@ describe('Phase 4: Customer-Configurable AI Auto-Reply Tests', () => {
       expect(res.body.data.requiresApproval).toBe(true);
     });
 
+    it('POST /api/ai/config rejects automatic-send mode until the complete guarded workflow exists', async () => {
+      const res = await request(app)
+        .post('/api/ai/config')
+        .set('Authorization', `Bearer ${rohanToken}`)
+        .set('x-tenant-id', 'tenant_bring_my_bite')
+        .send({
+          provider: 'mock',
+          model: 'mock-fast-reply',
+          mode: 'automatic_send',
+          enabled: true,
+        });
+
+      expect(res.status).toBe(409);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('AI_AUTOMATIC_SEND_UNSUPPORTED');
+    });
+
     it('POST /api/ai/approve-reply refuses the legacy mock-send bypass', async () => {
       const res = await request(app)
         .post('/api/ai/approve-reply')
