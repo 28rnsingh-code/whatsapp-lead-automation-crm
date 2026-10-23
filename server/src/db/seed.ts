@@ -63,7 +63,7 @@ export async function seedDefaults(): Promise<SeedResult> {
 
   // Public website demo account; tenant data is isolated from every paying customer.
   const DEMO_TENANT_ID = 'a0000000-0000-0000-0000-000000000003';
-  const DEMO_USER_ID = 'b0000000-0000-0000-0000-000000000003';
+  const DEMO_USER_ID = 'd0000000-0000-0000-0000-000000000003';
   const demoTenantResult = await pool.query<{ id: string }>(
     `INSERT INTO tenants (id, name, slug, status, timezone, currency, locale)
      VALUES ($1, 'Public Demo Workspace', 'public-demo', 'active', 'Asia/Kolkata', 'INR', 'en-IN')
