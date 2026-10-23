@@ -4,15 +4,17 @@ import { OpenAiAdapter } from './openaiAdapter';
 import { GeminiAdapter } from './geminiAdapter';
 import { maskSecret, encryptSecret, decryptSecret } from '../whatsapp/adapterRegistry';
 
-const adapters: Record<AiProviderType, AiProviderAdapter> = {
-  mock: new MockAiAdapter(),
+const adapters: Partial<Record<AiProviderType, AiProviderAdapter>> = {
   openai: new OpenAiAdapter(),
   gemini: new GeminiAdapter(),
-  anthropic: new MockAiAdapter(), // graceful fallback for anthropic
+  mock: new MockAiAdapter(),
 };
 
 export function getAiAdapter(provider: AiProviderType = 'mock'): AiProviderAdapter {
-  return adapters[provider] || adapters.mock;
+  if (!adapters[provider] || (provider === 'mock' && process.env.NODE_ENV === 'production')) {
+    throw new Error(`AI provider "${String(provider)}" is not implemented or is disabled in production.`);
+  }
+  return adapters[provider]!;
 }
 
 export function getAllSupportedAiProviders(): Array<{
@@ -20,7 +22,7 @@ export function getAllSupportedAiProviders(): Array<{
   name: string;
   supportedModels: string[];
 }> {
-  return [
+  const supported: Array<{ id: AiProviderType; name: string; supportedModels: string[] }> = [
     {
       id: 'openai',
       name: 'OpenAI (GPT-4o / GPT-4o-mini)',
@@ -31,17 +33,15 @@ export function getAllSupportedAiProviders(): Array<{
       name: 'Google Gemini (1.5 Flash / Pro)',
       supportedModels: ['gemini-1.5-flash', 'gemini-1.5-pro'],
     },
-    {
-      id: 'anthropic',
-      name: 'Anthropic Claude (3.5 Sonnet / Haiku)',
-      supportedModels: ['claude-3-5-sonnet', 'claude-3-haiku'],
-    },
-    {
+  ];
+  if (process.env.NODE_ENV !== 'production') {
+    supported.push({
       id: 'mock',
       name: 'Local Sandbox / Mock AI',
       supportedModels: ['mock-fast-reply', 'mock-smart-assistant'],
-    },
-  ];
+    });
+  }
+  return supported;
 }
 
 export function maskAiConfig(config: AiConfig): MaskedAiConfig {
