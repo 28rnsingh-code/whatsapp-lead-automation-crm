@@ -78,6 +78,8 @@ export const App: React.FC = () => {
   };
 
   const handleNavigate = (page: NavigationPage) => {
+    const demoAllowedPages: NavigationPage[] = ['dashboard', 'leads', 'pipeline', 'followups', 'contacts', 'reports', 'whatsapp', 'auth'];
+    if (isDemoSession && !demoAllowedPages.includes(page)) return;
     if (page === 'auth') {
       localStorage.removeItem('auth_token');
       localStorage.removeItem('active_tenant_id');
