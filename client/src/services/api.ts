@@ -557,7 +557,7 @@ export async function downloadReportsCsvApi(range: string = '30d'): Promise<Blob
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
-      'x-tenant-id': DEFAULT_TENANT_ID,
+      'x-tenant-id': getTenantIdFromToken(token) || '',
     },
   });
 
