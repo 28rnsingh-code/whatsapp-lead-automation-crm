@@ -59,3 +59,6 @@ export function createApp(): Express {
 }
 
 export const app = createApp();
+
+// Vercel's Express function adapter expects a default-exported handler.
+export default app;
