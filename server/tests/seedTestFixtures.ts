@@ -46,9 +46,16 @@ async function seedTestFixtures(): Promise<void> {
 
   const userFixtures = [
     {id:riyaUserId,email:'riya@bringmybite.in',name:'Riya Singh',tenantId:DEFAULT_TENANT_ID,role:'Sales',membership:'active'},
-    {id:otherUserId,email:'other@competitor.in',name:'Other Tenant Test User',tenantId:automicsTenantId,role:'Admin',membership:'active'},
     {id:suspendedUserId,email:'suspended@bringmybite.in',name:'Suspended Test Member',tenantId:DEFAULT_TENANT_ID,role:'Sales',membership:'suspended'},
   ];
+
+  // Create the non-member identity without granting it membership in either workspace.
+  await pool.query(
+    `INSERT INTO users (id, email_normalized, display_name, password_hash, status)
+     VALUES ($1, $2, $3, NULL, 'active')
+     ON CONFLICT (email_normalized) DO UPDATE SET display_name = EXCLUDED.display_name`,
+    [otherUserId, 'other@competitor.in', 'Other Tenant Test User']
+  );
 
   for (const u of userFixtures) {
     const userResult = await pool.query<{id:string}>(
