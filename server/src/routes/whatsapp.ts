@@ -345,6 +345,11 @@ router.post('/config', requireAuth, requireTenant(['Admin', 'Sales Manager']), a
 
 // 3. GET /api/whatsapp/webhook - Verify Meta challenge against a persisted workspace secret.
 router.get('/webhook', async (req: Request, res: Response): Promise<void> => {
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    sendWhatsAppUnavailable(res, req.requestId || 'req_unknown', 'ENCRYPTION_KEY_MISSING', 'Webhook verification is disabled until a unique persistent ENCRYPTION_KEY is configured.');
+    return;
+  }
+
   const mode = req.query['hub.mode'];
   const suppliedToken = typeof req.query['hub.verify_token'] === 'string'
     ? req.query['hub.verify_token']
@@ -401,6 +406,11 @@ router.get('/webhook', async (req: Request, res: Response): Promise<void> => {
 
 // 4. POST /api/whatsapp/webhook - Verify provider signature before processing events.
 router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
+  if (isProductionRuntime() && !hasSecureEncryptionKey()) {
+    sendWhatsAppUnavailable(res, req.requestId || 'req_unknown', 'ENCRYPTION_KEY_MISSING', 'Webhook verification is disabled until a unique persistent ENCRYPTION_KEY is configured.');
+    return;
+  }
+
   const requestId = req.requestId || 'req_unknown';
   const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
   const signature = typeof req.headers['x-hub-signature-256'] === 'string'
