@@ -17,6 +17,7 @@ import billingRoutes from './routes/billing';
 import { requireProductionDatabaseReady } from './middleware/databaseReadiness';
 import { auditTrailMiddleware } from './middleware/auditTrail';
 import { demoActionQuota } from './middleware/demoActionQuota';
+import { requirePasswordChangeCompletion } from './middleware/forcePasswordChange';
 import auditRoutes from './routes/audit';
 
 export function createApp(): Express {
@@ -42,6 +43,7 @@ export function createApp(): Express {
   app.use('/api', auditTrailMiddleware);
   // Enforce demo workspace boundaries and usage limits before feature routes execute.
   app.use('/api', demoActionQuota);
+  app.use('/api', requirePasswordChangeCompletion);
   app.use('/api/auth', authRoutes);
   app.use('/api/workspaces', workspaceRoutes);
   app.use('/api/audit', auditRoutes);
