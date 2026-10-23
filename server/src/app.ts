@@ -16,6 +16,7 @@ import reportRoutes from './routes/reports';
 import billingRoutes from './routes/billing';
 import { requireProductionDatabaseReady } from './middleware/databaseReadiness';
 import { auditTrailMiddleware } from './middleware/auditTrail';
+import { demoActionQuota } from './middleware/demoActionQuota';
 import auditRoutes from './routes/audit';
 
 export function createApp(): Express {
@@ -39,6 +40,8 @@ export function createApp(): Express {
   // Keep demo/in-memory route fallbacks out of production whenever PostgreSQL is not ready.
   app.use('/api', requireProductionDatabaseReady);
   app.use('/api', auditTrailMiddleware);
+  // Enforce demo workspace boundaries and usage limits before feature routes execute.
+  app.use('/api', demoActionQuota);
   app.use('/api/auth', authRoutes);
   app.use('/api/workspaces', workspaceRoutes);
   app.use('/api/audit', auditRoutes);
