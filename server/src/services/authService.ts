@@ -24,6 +24,7 @@ export interface AuthTokenPayload {
   /** Persistent anonymous browser identifier used for a demo visitor quota. */
   demoVisitorId?: string;
   demo?: boolean;
+  mustChangePassword?: boolean;
   iat?: number;
   exp?: number;
 }
