@@ -192,6 +192,21 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
   });
 
   describe('4. Webhook Hub Verification & Ingestion', () => {
+    it('GET /api/whatsapp/webhook echoes the challenge only for a persisted matching verification token', async () => {
+      await configureTestWhatsApp();
+      const challengeToken = 'hub_challenge_valid_987654';
+      const res = await request(app)
+        .get('/api/whatsapp/webhook')
+        .query({
+          'hub.mode': 'subscribe',
+          'hub.verify_token': 'test_webhook_verify_123',
+          'hub.challenge': challengeToken,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.text).toBe(challengeToken);
+    });
+
     it('GET /api/whatsapp/webhook rejects unconfigured verification tokens', async () => {
       const challengeToken = 'hub_challenge_random_123456';
       const res = await request(app)
@@ -200,6 +215,36 @@ describe('Phase 3: Configurable WhatsApp Provider Integration Tests', () => {
       expect(res.status).toBe(403);
       expect(res.body.success).toBe(false);
       expect(res.body.error.code).toBe('WEBHOOK_VERIFICATION_DENIED');
+    });
+
+    it('acknowledges signed status callbacks that do not belong to a CRM outbound message', async () => {
+      await configureTestWhatsApp();
+      const payload = {
+        object: 'whatsapp_business_account',
+        entry: [{
+          id: '209384756192834',
+          changes: [{
+            value: {
+              messaging_product: 'whatsapp',
+              metadata: { display_phone_number: '919999988888', phone_number_id: '9876543210123' },
+              statuses: [{
+                id: `wamid.external_${Date.now()}`,
+                status: 'delivered',
+                recipient_id: '919876543210',
+                timestamp: `${Math.floor(Date.now() / 1000)}`,
+              }],
+            },
+            field: 'messages',
+          }],
+        }],
+      };
+      const res = await request(app)
+        .post('/api/whatsapp/webhook')
+        .set('x-hub-signature-256', signWebhook(payload))
+        .send(payload);
+
+      expect(res.status).toBe(200);
+      expect(res.body.processed).toBe(0);
     });
 
     it('POST /api/whatsapp/webhook rejects unsigned events even when a tenant header is provided', async () => {
