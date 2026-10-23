@@ -13,6 +13,3 @@ CREATE INDEX IF NOT EXISTS idx_demo_usage_sessions_updated_at
   ON demo_usage_sessions(updated_at);
 
 
--- Member credentials created by a workspace admin must be changed on first sign-in.
-ALTER TABLE users
-  ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
