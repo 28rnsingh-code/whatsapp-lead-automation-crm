@@ -84,6 +84,8 @@ export interface Lead {
   nextAction: NextActionType;
   followUpAt?: string;
   consentStatus: ConsentStatus;
+  consentSource?: string;
+  consentRecordedAt?: string;
   optedOutAt?: string;
   notes?: string;
   createdAt: string;
