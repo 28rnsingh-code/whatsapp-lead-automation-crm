@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { StatusPill } from './StatusPill';
 import { Lead } from '../types';
-import { fetchLeadByIdApi, updateLeadApi, addLeadActivityApi, deleteLeadApi } from '../services/api';
+import { fetchLeadByIdApi, updateLeadApi, updateLeadConsentApi, addLeadActivityApi, deleteLeadApi } from '../services/api';
 
 export interface LeadDetailModalProps {
   isOpen: boolean;
@@ -25,6 +25,9 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
   const [isAddingNote, setIsAddingNote] = useState<boolean>(false);
   const [isUpdatingStage, setIsUpdatingStage] = useState<boolean>(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [consentStatusDraft, setConsentStatusDraft] = useState<'Consented' | 'Unknown' | 'Opted Out'>(initialLead?.consentStatus || 'Unknown');
+  const [consentSourceDraft, setConsentSourceDraft] = useState<string>(initialLead?.consentSource || '');
+  const [isSavingConsent, setIsSavingConsent] = useState<boolean>(false);
 
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const modalContainerRef = useRef<HTMLDivElement>(null);
@@ -32,12 +35,18 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
   // Sync state when initial lead changes and fetch fresh details & activity history from PostgreSQL
   useEffect(() => {
     setLead(initialLead);
+    setConsentStatusDraft(initialLead?.consentStatus || 'Unknown');
+    setConsentSourceDraft(initialLead?.consentSource || '');
     if (isOpen && initialLead?.id) {
       let isCancelled = false;
       setIsLoadingFresh(true);
       fetchLeadByIdApi(initialLead.id)
         .then((fresh) => {
-          if (!isCancelled) setLead(fresh);
+          if (!isCancelled) {
+            setLead(fresh);
+            setConsentStatusDraft(fresh.consentStatus || 'Unknown');
+            setConsentSourceDraft(fresh.consentSource || '');
+          }
         })
         .catch((err) => {
           console.warn('[LeadDetailModal] Could not refresh full lead details:', err.message);
@@ -76,6 +85,34 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
   }, [isOpen, onClose]);
 
   if (!isOpen || !lead) return null;
+
+  const handleSaveConsent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!lead || isSavingConsent) return;
+    if (consentStatusDraft === 'Consented' && !consentSourceDraft) {
+      setActionMessage('⚠️ Select the source of the customer’s explicit WhatsApp consent.');
+      return;
+    }
+    setIsSavingConsent(true);
+    setActionMessage(null);
+    try {
+      const saved = await updateLeadConsentApi(
+        lead.id,
+        consentStatusDraft,
+        consentStatusDraft === 'Consented' ? consentSourceDraft : undefined,
+      );
+      const updatedLead = { ...lead, ...saved };
+      setLead(updatedLead);
+      setConsentStatusDraft(saved.consentStatus || 'Unknown');
+      setConsentSourceDraft(saved.consentSource || '');
+      onLeadUpdated?.(updatedLead);
+      setActionMessage('✓ WhatsApp consent record saved.');
+    } catch (err: any) {
+      setActionMessage(`⚠️ Failed to save WhatsApp consent: ${err.message}`);
+    } finally {
+      setIsSavingConsent(false);
+    }
+  };
 
   const handleStageChange = async (newStageName: string) => {
     if (!lead || isUpdatingStage) return;
@@ -486,6 +523,80 @@ export const LeadDetailModal: React.FC<LeadDetailModalProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Section: WhatsApp consent evidence */}
+          <section
+            aria-labelledby="lead-whatsapp-consent-title"
+            style={{
+              background: 'var(--surface, #ffffff)',
+              border: '1px solid var(--line, #e1e9f5)',
+              borderRadius: 'var(--radius-card, 12px)',
+              padding: '16px 20px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '10px' }}>
+              <div>
+                <h3 id="lead-whatsapp-consent-title" style={{ margin: 0, fontSize: '14px' }}>WhatsApp Messaging Consent</h3>
+                <p style={{ margin: '5px 0 0', fontSize: '12px', color: 'var(--text-muted)' }}>
+                  Record only consent explicitly given by the customer. Unknown or opted-out leads cannot receive WhatsApp messages.
+                </p>
+              </div>
+              <StatusPill
+                label={lead.consentStatus || 'Unknown'}
+                variant={lead.consentStatus === 'Consented' && lead.consentSource && lead.consentRecordedAt && !lead.optedOutAt ? 'green' : lead.consentStatus === 'Opted Out' || lead.optedOutAt ? 'red' : 'amber'}
+              />
+            </div>
+            <form onSubmit={handleSaveConsent} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', alignItems: 'end' }}>
+              <div>
+                <label htmlFor="lead-consent-status" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>Consent status</label>
+                <select
+                  id="lead-consent-status"
+                  className="input-select"
+                  value={consentStatusDraft}
+                  onChange={(e) => setConsentStatusDraft(e.target.value as 'Consented' | 'Unknown' | 'Opted Out')}
+                  disabled={isSavingConsent}
+                  style={{ width: '100%' }}
+                >
+                  <option value="Unknown">Unknown — do not message</option>
+                  <option value="Consented">Consented — permission recorded</option>
+                  <option value="Opted Out">Opted Out — block messaging</option>
+                </select>
+              </div>
+              {consentStatusDraft === 'Consented' && (
+                <div>
+                  <label htmlFor="lead-consent-source" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>Evidence source</label>
+                  <select
+                    id="lead-consent-source"
+                    className="input-select"
+                    value={consentSourceDraft}
+                    onChange={(e) => setConsentSourceDraft(e.target.value)}
+                    disabled={isSavingConsent}
+                    required
+                    style={{ width: '100%' }}
+                  >
+                    <option value="">Select source…</option>
+                    <option value="website_form">Website form</option>
+                    <option value="whatsapp_inbound">Customer initiated WhatsApp</option>
+                    <option value="phone_verbal">Verbal consent by phone</option>
+                    <option value="paper_form">Signed paper form</option>
+                    <option value="email">Email confirmation</option>
+                    <option value="other">Other documented source</option>
+                  </select>
+                </div>
+              )}
+              <div>
+                <button type="submit" className="btn btn-primary" disabled={isSavingConsent}>
+                  {isSavingConsent ? 'Saving consent…' : 'Save consent status'}
+                </button>
+              </div>
+            </form>
+            <div style={{ marginTop: '10px', fontSize: '11px', color: 'var(--text-muted)' }}>
+              {lead.consentSource && lead.consentRecordedAt
+                ? `Recorded via ${lead.consentSource.replace(/_/g, ' ')} on ${formatDate(lead.consentRecordedAt)}.`
+                : 'No verified consent evidence recorded.'}
+              {lead.optedOutAt ? ` Opt-out recorded on ${formatDate(lead.optedOutAt)}.` : ''}
+            </div>
+          </section>
 
           {/* Section 3: Deal Information & Pipeline */}
           <div
