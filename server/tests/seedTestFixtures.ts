@@ -28,17 +28,19 @@ async function seedTestFixtures(): Promise<void> {
   const roles = new Map<string, string>();
   for (const tenantId of [DEFAULT_TENANT_ID, automicsTenantId]) {
     for (const roleName of ['Admin', 'Sales']) {
-      const role = await pool.query<{id:string}>(
-        `INSERT INTO roles (tenant_id, name, description, is_system)
-         SELECT $1, $2, 'CI fixture role', true
-         WHERE NOT EXISTS (SELECT 1 FROM roles WHERE tenant_id = $1 AND name = $2)
-         RETURNING id`,
+      const existingRes = await pool.query<{id:string}>(
+        'SELECT id FROM roles WHERE tenant_id = $1 AND name = $2 LIMIT 1',
         [tenantId, roleName]
       );
-      const existing = role.rows[0] ? role.rows[0].id : (await pool.query<{id:string}>(
-        'SELECT id FROM roles WHERE tenant_id = $1 AND name = $2 LIMIT 1', [tenantId, roleName]
-      )).rows[0].id;
-      roles.set(`${tenantId}:${roleName}`, existing);
+      let roleId = existingRes.rows[0]?.id;
+      if (!roleId) {
+        const inserted = await pool.query<{id:string}>(
+          'INSERT INTO roles (tenant_id, name, description, is_system) VALUES ($1, $2, $3, $4) RETURNING id',
+          [tenantId, roleName, 'CI fixture role', true]
+        );
+        roleId = inserted.rows[0].id;
+      }
+      roles.set(`${tenantId}:${roleName}`, roleId);
     }
   }
 
