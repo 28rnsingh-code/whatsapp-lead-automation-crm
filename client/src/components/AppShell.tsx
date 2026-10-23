@@ -21,6 +21,7 @@ export interface AppShellProps {
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
   children: React.ReactNode;
+  isDemo: boolean;
 }
 
 export const AppShell: React.FC<AppShellProps> = ({
@@ -30,6 +31,7 @@ export const AppShell: React.FC<AppShellProps> = ({
   isDarkMode,
   onToggleDarkMode,
   children,
+  isDemo,
 }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [workspaceModalOpen, setWorkspaceModalOpen] = useState(false);
@@ -53,6 +55,35 @@ export const AppShell: React.FC<AppShellProps> = ({
   const [subscription, setSubscription] = useState<any>(null);
   const [changingPlanId, setChangingPlanId] = useState('');
   const [planNotice, setPlanNotice] = useState('');
+  const [demoUsageText, setDemoUsageText] = useState('Loading demo usage…');
+
+  useEffect(() => {
+    if (!isDemo) return;
+    let cancelled = false;
+    const loadDemoUsage = async () => {
+      try {
+        const configuredBase = import.meta.env.VITE_API_BASE_URL || '/api';
+        const apiBase = configuredBase.endsWith('/') ? configuredBase.slice(0, -1) : configuredBase;
+        const fullApiBase = (apiBase.startsWith('http://') || apiBase.startsWith('https://')) && !apiBase.endsWith('/api')
+          ? apiBase + '/api'
+          : apiBase;
+        const response = await fetch(fullApiBase + '/demo/usage', {
+          headers: {
+            Authorization: 'Bearer ' + (localStorage.getItem('auth_token') || ''),
+            'x-tenant-id': localStorage.getItem('active_tenant_id') || '',
+          },
+        });
+        const payload = await response.json();
+        if (!cancelled && response.ok && payload.success) {
+          setDemoUsageText(String(payload.data.used) + ' of ' + String(payload.data.limit) + ' demo actions used · ' + String(payload.data.remaining) + ' remaining');
+        } else if (!cancelled) setDemoUsageText('Demo usage is currently unavailable');
+      } catch {
+        if (!cancelled) setDemoUsageText('Demo usage is currently unavailable');
+      }
+    };
+    void loadDemoUsage();
+    return () => { cancelled = true; };
+  }, [isDemo]);
 
   useEffect(() => {
     let cancelled = false;
@@ -188,6 +219,8 @@ export const AppShell: React.FC<AppShellProps> = ({
         onOpenWorkspaceModal={() => setWorkspaceModalOpen(true)}
         onOpenPlans={() => setPlansOpen(true)}
         currentWorkspaceName={currentWorkspace?.name || (workspaceLoading ? 'Loading workspace…' : 'Workspace unavailable')}
+        isDemo={isDemo}
+        demoUsageText={demoUsageText}
       />
 
       <div className="main-wrapper">
