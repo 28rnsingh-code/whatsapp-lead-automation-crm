@@ -15,9 +15,9 @@ describe('Leads PostgreSQL Persistence & Tenant Isolation Tests', () => {
   });
 
   const otherTenantToken = signToken({
-    userId: 'user_other_tenant',
-    email: 'other@competitor.in',
-    defaultTenantId: 'tenant_automics_labs',
+    userId: 'user_no_membership',
+    email: 'no-membership@bringmybite.test',
+    defaultTenantId: 'tenant_bring_my_bite',
   });
 
   // Track created records for guaranteed cleanup by primary key

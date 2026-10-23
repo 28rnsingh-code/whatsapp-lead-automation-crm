@@ -53,5 +53,9 @@ jobs:
         run: npx ts-node src/db/seed.ts
         working-directory: server
 
+      - name: Seed isolated test fixtures
+        run: npx ts-node tests/seedTestFixtures.ts
+        working-directory: server
+
       - name: Backend tests
         run: npm test
