@@ -100,6 +100,27 @@ export async function fetchWorkspacesApi(): Promise<WorkspaceSummary[]> {
   return apiRequest<WorkspaceSummary[]>('/workspaces', { method: 'GET' });
 }
 
+export interface AuditEventRecord {
+  id: string;
+  tenantId: string;
+  actorUserId: string | null;
+  actor: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  occurredAt: string;
+  requestId: string | null;
+  metadata: Record<string, unknown> | null;
+  status: 'SUCCESS' | 'FAILED';
+  entity: string;
+  source: string;
+}
+
+export async function fetchAuditEventsApi(limit = 100): Promise<AuditEventRecord[]> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  return apiRequest<AuditEventRecord[]>(`/audit?${query.toString()}`, { method: 'GET' });
+}
+
 
 export interface FetchLeadsParams {
   q?: string;

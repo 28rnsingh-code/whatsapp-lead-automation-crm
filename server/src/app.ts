@@ -15,6 +15,8 @@ import aiRoutes from './routes/ai';
 import reportRoutes from './routes/reports';
 import billingRoutes from './routes/billing';
 import { requireProductionDatabaseReady } from './middleware/databaseReadiness';
+import { auditTrailMiddleware } from './middleware/auditTrail';
+import auditRoutes from './routes/audit';
 
 export function createApp(): Express {
   const app = express();
@@ -36,8 +38,10 @@ export function createApp(): Express {
   app.use('/api', healthRoutes);
   // Keep demo/in-memory route fallbacks out of production whenever PostgreSQL is not ready.
   app.use('/api', requireProductionDatabaseReady);
+  app.use('/api', auditTrailMiddleware);
   app.use('/api/auth', authRoutes);
   app.use('/api/workspaces', workspaceRoutes);
+  app.use('/api/audit', auditRoutes);
   app.use('/api/leads', leadRoutes);
   app.use('/api/pipeline', pipelineRoutes);
   app.use('/api/tasks', taskRoutes);
