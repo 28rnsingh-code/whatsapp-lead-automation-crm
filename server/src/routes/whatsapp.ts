@@ -37,7 +37,7 @@ function normalizeWhatsAppPhone(value: unknown): string | null {
 }
 
 function sendExistingMessage(res: Response, existing: any, requestId: string, requestHash: string): void {
-  if (!existing || existing.idempotencyRequestHash !== requestHash) {
+  if (!existing || !existing.idempotencyRequestHash || existing.idempotencyRequestHash !== requestHash) {
     res.status(409).json({
       success: false,
       error: { code: 'IDEMPOTENCY_KEY_REUSED', message: 'This idempotency key was already used for a different or unverified message request. Use a new key only for a genuinely new user action.', requestId },
@@ -59,6 +59,13 @@ function sendExistingMessage(res: Response, existing: any, requestId: string, re
   };
   if (existing.status === 'queued') {
     res.status(202).json({ success: true, data: payload, meta: { requestId, idempotentReplay: true, processing: true } });
+    return;
+  }
+  if (existing.status === 'failed') {
+    res.status(502).json({
+      success: false,
+      error: { code: 'WHATSAPP_PREVIOUS_ATTEMPT_FAILED', message: 'The previous attempt is recorded as failed and was not resent. Check provider/message history before creating a new send attempt.', requestId },
+    });
     return;
   }
   res.status(200).json({ success: true, data: payload, meta: { requestId, idempotentReplay: true } });
@@ -211,7 +218,7 @@ router.get('/config', requireAuth, requireTenant(), async (req: Request, res: Re
 });
 
 // 2. POST /api/whatsapp/config - Verify provider credentials, then persist encrypted settings.
-router.post('/config', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
+router.post('/config', requireAuth, requireTenant(['Admin', 'Sales Manager']), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const requestId = req.requestId || 'req_unknown';
   const body = req.body || {};
@@ -591,7 +598,7 @@ router.get('/messages', requireAuth, requireTenant(), async (req: Request, res: 
 });
 
 // 6. POST /api/whatsapp/messages - Policy-checked, idempotent outbound dispatch.
-router.post('/messages', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
+router.post('/messages', requireAuth, requireTenant(['Admin', 'Sales Manager', 'Sales Executive']), async (req: Request, res: Response): Promise<void> => {
   const tenantId = req.tenantContext!.tenantId;
   const requestId = req.requestId || 'req_unknown';
   const {
@@ -824,6 +831,18 @@ router.post('/messages', requireAuth, requireTenant(), async (req: Request, res:
     }
     effectiveTemplateLanguage = effectiveTemplateLanguage || selectedTemplate.language || 'en';
     if (!isTestRuntime()) {
+      const headerComponent = Array.isArray(selectedTemplate.components)
+        ? selectedTemplate.components.find((component: any) => component.type === 'HEADER')
+        : undefined;
+      const headerHasVariables = typeof headerComponent?.text === 'string' &&
+        /\{\{\d+\}\}/.test(headerComponent.text);
+      if (headerHasVariables || (headerComponent?.format && headerComponent.format !== 'TEXT')) {
+        res.status(409).json({
+          success: false,
+          error: { code: 'WHATSAPP_TEMPLATE_HEADER_UNSUPPORTED', message: 'This approved template uses header parameters or media not supported by the current sender. Choose a compatible text-header template.', requestId },
+        });
+        return;
+      }
       const bodyComponent = Array.isArray(selectedTemplate.components)
         ? selectedTemplate.components.find((component: any) => component.type === 'BODY')
         : undefined;
