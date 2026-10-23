@@ -1,6 +1,6 @@
 import { Lead, ApiResponse, ApiError } from '../types';
 
-const API_BASE = '/api';
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
 const DEFAULT_TENANT_ID = 'tenant_bring_my_bite';
 
 let inFlightAuth: Promise<string> | null = null;
