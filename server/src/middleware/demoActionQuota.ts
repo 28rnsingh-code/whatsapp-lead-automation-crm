@@ -62,6 +62,21 @@ export async function demoActionQuota(req: Request, res: Response, next: NextFun
     return;
   }
 
+  if (req.method === 'GET' && path === '/demo/usage') {
+    try {
+      const usage = await pool.query<{ action_count: number }>(
+        'SELECT action_count FROM demo_usage_sessions WHERE tenant_id = $1 AND session_id = $2 LIMIT 1',
+        [PUBLIC_DEMO_TENANT_ID, payload.demoSessionId],
+      );
+      const used = Number(usage.rows[0]?.action_count || 0);
+      res.json({ success: true, data: { limit: PUBLIC_DEMO_MAX_ACTIONS, used, remaining: Math.max(0, PUBLIC_DEMO_MAX_ACTIONS - used), simulatedOutbound: true }, meta: { requestId: req.requestId } });
+    } catch (error) {
+      console.error('[DemoQuota] Usage read failed', { requestId: req.requestId, error });
+      res.status(503).json({ success: false, error: { code: 'DEMO_QUOTA_UNAVAILABLE', message: 'Demo usage is temporarily unavailable.', requestId: req.requestId } });
+    }
+    return;
+  }
+
   // Only application screens needed for a limited guided trial are available.
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
     if (!READ_PREFIXES.some(prefix => path === prefix || path.startsWith(prefix + '/'))) {
