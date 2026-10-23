@@ -113,7 +113,7 @@ export async function seedDefaults(): Promise<SeedResult> {
      ON CONFLICT (tenant_id) DO UPDATE SET
        plan_id = 'starter', plan_name = 'Demo Plan', status = 'trial',
        billing_provider = 'mock',
-       limits = '{"maxLeads":5,"maxImportsPerMonth":0,"maxMessagesPerMonth":5,"maxAiTokens":0}'::jsonb,
+       limits = '{"maxMembers":1,"maxLeads":5,"maxImportsPerMonth":0,"maxMessagesPerMonth":5,"maxAiTokens":0}'::jsonb,
        current_period_end = NOW() + INTERVAL '30 days',
        updated_at = NOW();`,
     [demoTenantId],
