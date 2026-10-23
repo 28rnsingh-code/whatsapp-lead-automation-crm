@@ -20,6 +20,15 @@ describe('OneClick Automics CRM API Contracts & Envelope', () => {
     expect(res.headers['x-request-id']).toBeDefined();
   });
 
+  it('GET /api/ready verifies the database before claiming readiness', async () => {
+    const res = await request(app).get('/api/ready');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('success', true);
+    expect(res.body.data).toHaveProperty('status', 'ready');
+    expect(res.body.data.checks).toHaveProperty('database', 'healthy');
+    expect(res.body.meta).toHaveProperty('requestId');
+  });
+
   it('GET /api/workspaces without auth header should return 401 Unauthenticated', async () => {
     const res = await request(app).get('/api/workspaces');
     expect(res.status).toBe(401);
