@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { RoleName } from '../types';
 import { pool } from '../db';
-import { DEFAULT_TENANT_ID, DEFAULT_USER_ID } from '../db/seed';
 
 export interface TenantContext {
   tenantId: string;
@@ -21,11 +20,11 @@ declare global {
 // Backward compatibility for pre-UUID test/demo identifiers. These aliases are mapped
 // to fixed seeded UUIDs; arbitrary slugs are never trusted as database identifiers.
 const LEGACY_TENANT_IDS: Record<string, string> = {
-  tenant_bring_my_bite: DEFAULT_TENANT_ID,
+  tenant_bring_my_bite: 'a0000000-0000-0000-0000-000000000001',
   tenant_automics_labs: 'a0000000-0000-0000-0000-000000000002',
 };
 const LEGACY_USER_IDS: Record<string, string> = {
-  user_rohan_singh: DEFAULT_USER_ID,
+  user_rohan_singh: 'b0000000-0000-0000-0000-000000000001',
 };
 
 function normalizeTenantId(id: string): string | null {
