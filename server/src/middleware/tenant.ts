@@ -27,6 +27,8 @@ const LEGACY_USER_IDS: Record<string, string> = {
   user_rohan_singh: 'b0000000-0000-0000-0000-000000000001',
 };
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function normalizeTenantId(id: string): string | null {
   if (LEGACY_TENANT_IDS[id]) return LEGACY_TENANT_IDS[id];
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -35,8 +37,10 @@ function normalizeTenantId(id: string): string | null {
 
 function normalizeUserId(id: string): string | null {
   if (LEGACY_USER_IDS[id]) return LEGACY_USER_IDS[id];
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  return uuidPattern.test(id) ? id : null;
+  if (UUID_PATTERN.test(id)) return id;
+  // Compatibility for old signed test/demo tokens: resolve by their email claim.
+  // Never map an unknown identity to a different user.
+  return null;
 }
 
 /**
@@ -74,8 +78,8 @@ export function requireTenant(allowedRoles?: RoleName[]) {
     }
 
     const targetTenantId = normalizeTenantId(requestedTenantId);
-    const targetUserId = normalizeUserId(req.userId);
-    if (!targetTenantId || !targetUserId) {
+    let targetUserId = normalizeUserId(req.userId);
+    if (!targetTenantId) {
       res.status(403).json({
         success: false,
         error: {
@@ -90,6 +94,23 @@ export function requireTenant(allowedRoles?: RoleName[]) {
     let membership: { role: RoleName; status: string; permissions: string[] } | null = null;
 
     try {
+      // If a pre-UUID token carries a legacy user id, resolve it to the real persisted
+      // user by the signed JWT email claim. Authorization still depends on membership rows.
+      if (!targetUserId && req.userEmail) {
+        const userLookup = await pool.query<{ id: string }>(
+          `SELECT id FROM users WHERE email_normalized = $1 AND status = 'active' LIMIT 1`,
+          [req.userEmail.trim().toLowerCase()]
+        );
+        targetUserId = userLookup.rows[0]?.id ?? null;
+      }
+      if (!targetUserId) {
+        res.status(403).json({
+          success: false,
+          error: { code: 'TENANT_ACCESS_DENIED', message: 'You are not a member of this workspace.', requestId },
+        });
+        return;
+      }
+
       const result = await pool.query<{ role_name: string; status: string; permission_key: string | null }>(
         `SELECT r.name AS role_name, m.status, rp.permission_key
          FROM memberships m
