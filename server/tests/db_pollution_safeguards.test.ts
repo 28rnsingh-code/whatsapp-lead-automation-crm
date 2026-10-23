@@ -17,6 +17,7 @@ import { signToken } from '../src/services/authService';
 
 describe('Database Pollution Prevention & Test Safety Safeguards', () => {
   const originalEnv = { ...process.env };
+  const originalVitest = process.env.VITEST;
 
   const rohanToken = signToken({
     userId: 'user_rohan_singh',
@@ -34,6 +35,8 @@ describe('Database Pollution Prevention & Test Safety Safeguards', () => {
     process.env.TEST_DATABASE_URL = originalEnv.TEST_DATABASE_URL;
     process.env.DATABASE_URL = originalEnv.DATABASE_URL;
     process.env.NODE_ENV = originalEnv.NODE_ENV;
+    if (originalVitest === undefined) delete process.env.VITEST;
+    else process.env.VITEST = originalVitest;
   });
 
   describe('1. Database Name & Classifier Safety Invariants', () => {
@@ -59,6 +62,32 @@ describe('Database Pollution Prevention & Test Safety Safeguards', () => {
       expect(isDedicatedTestDatabase('crm_test_isolated')).toBe(true);
       expect(isDedicatedTestDatabase('oneclick_crm')).toBe(false);
       expect(isDedicatedTestDatabase('production_crm')).toBe(false);
+    });
+  });
+
+  describe('Production database configuration must fail closed', () => {
+    it('blocks production startup when DATABASE_URL is missing instead of falling back to localhost', () => {
+      process.env.NODE_ENV = 'production';
+      process.env.VITEST = 'false';
+      delete process.env.DATABASE_URL;
+      delete process.env.TEST_DATABASE_URL;
+      delete process.env.DATABASE_TEST_URL;
+
+      const config = resolveDatabaseConfig();
+      expect(config.isBlocked).toBe(true);
+      expect(config.connectionString).toBe('');
+      expect(config.blockReason).toContain('DATABASE_URL is not configured');
+    });
+
+    it('blocks localhost database endpoints in production', () => {
+      process.env.NODE_ENV = 'production';
+      process.env.VITEST = 'false';
+      delete process.env.TEST_DATABASE_URL;
+      process.env.DATABASE_URL = 'postgresql://postgres:realistic-secret@localhost:5432/oneclick_crm';
+
+      const config = resolveDatabaseConfig();
+      expect(config.isBlocked).toBe(true);
+      expect(config.blockReason).toContain('local/loopback host in production');
     });
   });
 

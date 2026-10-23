@@ -1,57 +1,101 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { requireTenant } from '../middleware/tenant';
-import { Tenant } from '../types';
+import { pool, resolveDatabaseConfig } from '../db';
 
 const router = Router();
 
-const WORKSPACES: Tenant[] = [
-  {
-    id: 'tenant_bring_my_bite',
-    name: 'Bring My Bite',
-    slug: 'bring-my-bite',
-    status: 'active',
-    timezone: 'Asia/Kolkata',
-    currency: 'INR',
-    locale: 'en-IN',
-    createdAt: '2026-01-15T09:00:00Z',
-    updatedAt: '2026-01-15T09:00:00Z',
-  },
-  {
-    id: 'tenant_automics_labs',
-    name: 'Automics Labs',
-    slug: 'automics-labs',
-    status: 'active',
-    timezone: 'Asia/Kolkata',
-    currency: 'INR',
-    locale: 'en-IN',
-    createdAt: '2026-02-01T10:00:00Z',
-    updatedAt: '2026-02-01T10:00:00Z',
-  },
-];
-
-// List user's available workspaces
-router.get('/', requireAuth, (req: Request, res: Response) => {
-  res.json({
-    success: true,
-    data: WORKSPACES,
-    meta: {
-      totalCount: WORKSPACES.length,
-      requestId: req.requestId,
-    },
+function sendWorkspaceUnavailable(res: Response, requestId: string, code = 'DATABASE_UNAVAILABLE'): void {
+  res.status(503).json({
+    success: false,
+    error: { code, message: 'Workspace information is unavailable until the database connection is healthy.', requestId },
   });
+}
+
+/** Return only the authenticated account's active, persisted workspace memberships. */
+router.get('/', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const requestId = req.requestId || 'req_unknown';
+  const email = req.userEmail?.trim().toLowerCase();
+  if (!email) {
+    res.status(401).json({
+      success: false,
+      error: { code: 'UNAUTHENTICATED', message: 'Authenticated account identity is unavailable.', requestId },
+    });
+    return;
+  }
+
+  if (resolveDatabaseConfig().isBlocked) {
+    sendWorkspaceUnavailable(res, requestId, 'DATABASE_CONFIGURATION_INVALID');
+    return;
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT
+         t.id, t.name, t.slug, t.status, t.timezone, t.currency, t.locale,
+         t.created_at AS "createdAt", t.updated_at AS "updatedAt",
+         r.name AS role
+       FROM users u
+       JOIN memberships m ON m.user_id = u.id
+       JOIN tenants t ON t.id = m.tenant_id
+       JOIN roles r ON r.id = m.role_id
+       WHERE u.email_normalized = $1
+         AND u.status = 'active'
+         AND m.status = 'active'
+         AND t.status IN ('active', 'trial')
+       ORDER BY t.created_at ASC, t.name ASC;`,
+      [email],
+    );
+    res.json({ success: true, data: result.rows, meta: { totalCount: result.rows.length, requestId } });
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_UNAVAILABLE')
+      : 'DATABASE_UNAVAILABLE';
+    console.error('[Workspaces] Membership listing failed', { requestId, errorCode });
+    sendWorkspaceUnavailable(res, requestId);
+  }
 });
 
-// Get current workspace details (enforcing tenant isolation)
-router.get('/current', requireAuth, requireTenant(), (req: Request, res: Response) => {
-  const currentTenant = WORKSPACES.find(w => w.id === req.tenantContext?.tenantId) || WORKSPACES[0];
-  res.json({
-    success: true,
-    data: currentTenant,
-    meta: {
-      requestId: req.requestId,
-    },
-  });
+/** Resolve the current workspace only after requireTenant validates membership. */
+router.get('/current', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
+  const requestId = req.requestId || 'req_unknown';
+  if (resolveDatabaseConfig().isBlocked) {
+    sendWorkspaceUnavailable(res, requestId, 'DATABASE_CONFIGURATION_INVALID');
+    return;
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT
+         t.id, t.name, t.slug, t.status, t.timezone, t.currency, t.locale,
+         t.created_at AS "createdAt", t.updated_at AS "updatedAt",
+         r.name AS role
+       FROM tenants t
+       JOIN memberships m ON m.tenant_id = t.id
+       JOIN roles r ON r.id = m.role_id
+       WHERE t.id = $1
+         AND m.user_id = $2
+         AND m.status = 'active'
+         AND t.status IN ('active', 'trial')
+       LIMIT 1;`,
+      [req.tenantContext!.tenantId, req.userId],
+    );
+
+    if (!result.rows.length) {
+      res.status(403).json({
+        success: false,
+        error: { code: 'TENANT_ACCESS_DENIED', message: 'You are not an active member of this workspace.', requestId },
+      });
+      return;
+    }
+    res.json({ success: true, data: result.rows[0], meta: { requestId } });
+  } catch (error) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code || 'DATABASE_UNAVAILABLE')
+      : 'DATABASE_UNAVAILABLE';
+    console.error('[Workspaces] Current workspace lookup failed', { requestId, errorCode });
+    sendWorkspaceUnavailable(res, requestId);
+  }
 });
 
 export default router;

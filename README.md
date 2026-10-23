@@ -26,7 +26,7 @@ Configure your PostgreSQL connection string in `.env` if using a live database:
 ```env
 DATABASE_URL=postgresql://postgres:password@localhost:5432/oneclick_crm
 PORT=4000
-VITE_API_URL=http://localhost:4000/api
+VITE_API_BASE_URL=http://localhost:4000/api
 ```
 
 ### 3. Database Migrations
@@ -149,3 +149,12 @@ All API endpoints return a predictable JSON envelope:
 └── 04_Antigravity_Handoff/          # Preserved specifications
 └── 05_Assets_and_Prototype/         # Preserved prototypes
 ```
+
+
+## Health and Readiness
+
+- `GET /api/health` is the API liveness endpoint; it confirms the process can answer HTTP requests.
+- `GET /api/ready` checks PostgreSQL and returns HTTP 503 if the database is unavailable or database configuration is unsafe.
+- Run `npm run db:check --workspace=server` to verify the configured database before migrations or a release.
+- Production requires a real `DATABASE_URL` in the hosting environment. The API no longer silently falls back to a localhost database.
+- Vercel instances use a bounded connection pool (default max 3, hard cap 5) and zero minimum idle connections to reduce pressure on PostgreSQL as serverless instances scale.

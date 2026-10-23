@@ -5,7 +5,7 @@ const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(
 const API_BASE = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
   ? `${configuredApiBase}/api`
   : configuredApiBase;
-function getTenantIdFromToken(token: string): string | null {
+export function getDefaultTenantIdFromToken(token: string): string | null {
   try {
     const payload = token.split('.')[1];
     if (!payload) return null;
@@ -17,11 +17,15 @@ function getTenantIdFromToken(token: string): string | null {
   }
 }
 
-let inFlightAuth: Promise<string> | null = null;
+function getTenantIdFromToken(token: string): string | null {
+  const selectedTenantId = localStorage.getItem('active_tenant_id');
+  return selectedTenantId || getDefaultTenantIdFromToken(token);
+}
 
 /**
  * Retrieves the current authentication JWT from localStorage.
- * If missing or invalid, automatically authenticates with default dev credentials.
+ * Missing credentials are handled by the application's login screen; this
+ * helper never silently logs a user in with demo credentials.
  */
 export async function getAuthToken(): Promise<string> {
   const existingToken = localStorage.getItem('auth_token');
@@ -33,12 +37,13 @@ export async function getAuthToken(): Promise<string> {
 }
 
 /**
- * Authenticated API Request Wrapper with automatic 401 token refresh retry.
+ * Authenticated API request wrapper. A 401 clears the stale token and notifies
+ * the app shell so the user returns to the login screen instead of retrying
+ * the same request without credentials.
  */
 async function apiRequest<T>(
   endpoint: string,
-  options: RequestInit = {},
-  isRetry = false
+  options: RequestInit = {}
 ): Promise<T> {
   const token = await getAuthToken();
   const headers = new Headers(options.headers || {});
@@ -54,12 +59,11 @@ async function apiRequest<T>(
     headers,
   });
 
-  if (response.status === 401 && !isRetry) {
+  const result = await response.json().catch(() => ({} as any));
+  if (response.status === 401) {
     localStorage.removeItem('auth_token');
-    return apiRequest<T>(endpoint, options, true);
+    window.dispatchEvent(new Event('auth:unauthorized'));
   }
-
-  const result = await response.json();
   if (!response.ok || !result.success) {
     const errorObj = result.error || {
       code: `HTTP_${response.status}`,
@@ -74,6 +78,49 @@ async function apiRequest<T>(
 
   return result.data as T;
 }
+
+/** Validates the current token against the persistent backend session. */
+export async function fetchAuthSessionApi(): Promise<any> {
+  return apiRequest<any>('/auth/session', { method: 'GET' });
+}
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  slug: string;
+  status: 'active' | 'suspended' | 'trial';
+  timezone: string;
+  currency: string;
+  locale: string;
+  createdAt: string;
+  updatedAt: string;
+  role: string;
+}
+
+export async function fetchWorkspacesApi(): Promise<WorkspaceSummary[]> {
+  return apiRequest<WorkspaceSummary[]>('/workspaces', { method: 'GET' });
+}
+
+export interface AuditEventRecord {
+  id: string;
+  tenantId: string;
+  actorUserId: string | null;
+  actor: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  occurredAt: string;
+  requestId: string | null;
+  metadata: Record<string, unknown> | null;
+  status: 'SUCCESS' | 'FAILED';
+  entity: string;
+  source: string;
+}
+
+export async function fetchAuditEventsApi(limit = 100): Promise<AuditEventRecord[]> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  return apiRequest<AuditEventRecord[]>(`/audit?${query.toString()}`, { method: 'GET' });
+}
+
 
 export interface FetchLeadsParams {
   q?: string;
@@ -375,6 +422,7 @@ export interface WhatsAppConfigResponse {
     businessAccountId?: string;
     accessTokenMasked?: string;
     appSecretMasked?: string;
+    webhookVerifyTokenMasked?: string;
     apiKeyMasked?: string;
     sourceNumber?: string;
     status: 'connected' | 'unconfigured' | 'error';

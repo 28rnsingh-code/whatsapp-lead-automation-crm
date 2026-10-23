@@ -14,20 +14,34 @@ import whatsappRoutes from './routes/whatsapp';
 import aiRoutes from './routes/ai';
 import reportRoutes from './routes/reports';
 import billingRoutes from './routes/billing';
+import { requireProductionDatabaseReady } from './middleware/databaseReadiness';
+import { auditTrailMiddleware } from './middleware/auditTrail';
+import auditRoutes from './routes/audit';
 
 export function createApp(): Express {
   const app = express();
 
   // Standard Middlewares
   app.use(cors());
-  app.use(express.json({ limit: '15mb' }));
+  app.use(express.json({
+    limit: '15mb',
+    verify: (req, _res, buffer) => {
+      // Meta webhook signatures are calculated over the exact original bytes,
+      // not JSON.stringify(req.body), which may produce a different byte stream.
+      (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+    },
+  }));
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
   app.use(requestIdMiddleware);
 
   // Mount API Routes
   app.use('/api', healthRoutes);
+  // Keep demo/in-memory route fallbacks out of production whenever PostgreSQL is not ready.
+  app.use('/api', requireProductionDatabaseReady);
+  app.use('/api', auditTrailMiddleware);
   app.use('/api/auth', authRoutes);
   app.use('/api/workspaces', workspaceRoutes);
+  app.use('/api/audit', auditRoutes);
   app.use('/api/leads', leadRoutes);
   app.use('/api/pipeline', pipelineRoutes);
   app.use('/api/tasks', taskRoutes);

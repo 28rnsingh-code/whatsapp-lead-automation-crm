@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 export interface TopbarProps {
   onToggleSidebar: () => void;
@@ -14,16 +14,18 @@ export const Topbar: React.FC<TopbarProps> = ({
   isDarkMode,
   onToggleDarkMode,
   onSearch,
-  notificationCount = 3,
+  notificationCount = 0,
   onOpenNotifications,
 }) => {
+  const [searchQuery, setSearchQuery] = useState('');
+  const currentPeriod = new Intl.DateTimeFormat('en-IN', { month: 'short', year: 'numeric' }).format(new Date());
+
   return (
     <header className="topbar">
       {/* Mobile Menu Hamburger */}
       <button
         type="button"
         className="icon-button mobile-menu-btn"
-        style={{ display: 'none' }}
         onClick={onToggleSidebar}
         aria-label="Toggle navigation drawer"
       >
@@ -35,8 +37,15 @@ export const Topbar: React.FC<TopbarProps> = ({
         <span className="search-icon" aria-hidden="true">⌕</span>
         <input
           type="search"
-          placeholder="Search leads, contacts, companies… (Ctrl+K)"
-          onChange={(e) => onSearch(e.target.value)}
+          placeholder="Search leads, contacts, companies… (press Enter)"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              onSearch(searchQuery.trim());
+            }
+          }}
           aria-label="Global Search"
         />
       </div>
@@ -44,21 +53,21 @@ export const Topbar: React.FC<TopbarProps> = ({
       {/* Action Controls */}
       <div className="topbar-actions">
         {/* Date Filter */}
-        <button
-          type="button"
+        <div
           className="icon-button hide-mobile"
-          title="Filter date range"
+          aria-label="Current reporting period"
+          title="Current reporting period; date filtering is not available yet"
         >
           <span>▦</span>
-          <span>Oct 1 – 31, 2026 ▾</span>
-        </button>
+          <span>{currentPeriod} · Current month</span>
+        </div>
 
         {/* Notifications */}
         <button
           type="button"
           className="icon-button"
           onClick={onOpenNotifications}
-          aria-label={`View notifications (${notificationCount} unread)`}
+          aria-label="Open recent activity"
         >
           <span>🔔</span>
           {notificationCount > 0 && (

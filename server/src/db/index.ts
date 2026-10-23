@@ -47,9 +47,22 @@ if (fs.existsSync(rootEnvPath)) {
 }
 
 const initialConfig = resolveDatabaseConfig();
+const isServerlessRuntime = process.env.VERCEL === '1';
 
-// Create connection pool using safe resolved configuration.
-// If blocked (e.g. test environment pointing to oneclick_crm), NEVER connect to oneclick_crm.
+function readPoolSize(value: string | undefined, fallback: number, min: number, max: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
+// Bound per-instance PostgreSQL usage in serverless environments. A minimum
+// of two idle connections per function instance can exhaust small DB plans.
+const requestedPoolMax = readPoolSize(process.env.DATABASE_POOL_MAX, isServerlessRuntime ? 3 : 10, 1, 50);
+const safePoolMax = isServerlessRuntime ? Math.min(requestedPoolMax, 5) : requestedPoolMax;
+const poolMin = isServerlessRuntime ? 0 : Math.min(readPoolSize(process.env.DATABASE_POOL_MIN, 0, 0, 20), safePoolMax);
+
+// Unsafe configuration never reaches the pool: guarded query/connect methods
+// fail closed before the placeholder pool can establish a connection.
 export const pool = new Pool(
   initialConfig.isBlocked
     ? {
@@ -60,10 +73,11 @@ export const pool = new Pool(
       }
     : {
         connectionString: initialConfig.connectionString,
-        min: parseInt(process.env.DATABASE_POOL_MIN || '2', 10),
-        max: parseInt(process.env.DATABASE_POOL_MAX || '10', 10),
-        idleTimeoutMillis: 30000,
+        min: poolMin,
+        max: safePoolMax,
+        idleTimeoutMillis: isServerlessRuntime ? 10000 : 30000,
         connectionTimeoutMillis: 5000,
+        allowExitOnIdle: isServerlessRuntime,
       }
 );
 
