@@ -37,8 +37,7 @@ export const AuthPage: React.FC = () => {
 
   const handleForgot = async (e: React.FormEvent) => {
     e.preventDefault();
-    const form = e.currentTarget;
-    const formData = new FormData(form);
+    const formData = new FormData(e.currentTarget as HTMLFormElement);
     const recoveryEmail = String(formData.get('recoveryEmail') || '').trim();
     try {
       const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
