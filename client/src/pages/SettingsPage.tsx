@@ -271,11 +271,17 @@ export const SettingsPage: React.FC = () => {
             </div>
             {waConfig?.config.status && (
               <StatusPill
-                label={waConfig.config.status === 'connected' ? 'Connected' : 'Unconfigured'}
-                variant={waConfig.config.status === 'connected' ? 'green' : 'amber'}
+                label={waConfig.config.status === 'connected' ? 'Connected' : waConfig.config.status === 'error' ? 'Error' : 'Not configured'}
+                variant={waConfig.config.status === 'connected' ? 'green' : waConfig.config.status === 'error' ? 'red' : 'amber'}
               />
             )}
           </div>
+
+          {waConfig?.config.errorMessage && (
+            <p role="alert" style={{ color: 'var(--red-text, #b42318)', background: 'var(--red-subtle, #fef3f2)', padding: '10px 12px', borderRadius: '8px', fontSize: '12px' }}>
+              {waConfig.config.errorMessage}
+            </p>
+          )}
 
           <form onSubmit={handleSaveWhatsApp} style={{ display: 'grid', gap: '16px', marginTop: '16px' }}>
             <div>
@@ -289,9 +295,9 @@ export const SettingsPage: React.FC = () => {
                 style={{ width: '100%' }}
               >
                 <option value="cloud_api">Meta Official WhatsApp Cloud API (Recommended)</option>
-                <option value="gupshup">Gupshup Enterprise WhatsApp API</option>
-                <option value="twilio">Twilio WhatsApp API</option>
-                <option value="mock">Local Test Mock Adapter (Sandbox)</option>
+                <option value="gupshup" disabled>Gupshup — unavailable until live credentials are verified</option>
+                <option value="twilio" disabled>Twilio — adapter not implemented</option>
+                <option value="mock" disabled={import.meta.env.PROD}>Local Test Mock Adapter (non-production only)</option>
               </select>
             </div>
 
