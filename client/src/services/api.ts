@@ -635,3 +635,67 @@ export async function changePlanApi(planId: string): Promise<any> {
 
 
 
+
+
+// ==========================================
+// Workspace team, seat caps and member passwords
+// ==========================================
+
+export interface TeamMemberRecord {
+  membershipId: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  role: 'Admin' | 'Sales Manager' | 'Sales Executive' | 'Read-only';
+  membershipStatus: string;
+  accountStatus: string;
+  invitedAt?: string;
+  acceptedAt?: string;
+  mustChangePassword: boolean;
+  leadsAssigned: number;
+}
+
+export interface TeamMembersResponse {
+  members: TeamMemberRecord[];
+  maxMembers: number;
+  planId: string;
+  remainingSeats: number;
+}
+
+export async function fetchTeamMembersApi(): Promise<TeamMembersResponse> {
+  return apiRequest<TeamMembersResponse>('/team/members', { method: 'GET' });
+}
+
+export async function createTeamMemberApi(payload: {
+  email: string;
+  displayName: string;
+  role: TeamMemberRecord['role'];
+}): Promise<any> {
+  return apiRequest<any>('/team/members', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateTeamMemberRoleApi(userId: string, role: TeamMemberRecord['role']): Promise<any> {
+  return apiRequest<any>(`/team/members/${encodeURIComponent(userId)}/role`, {
+    method: 'PATCH',
+    body: JSON.stringify({ role }),
+  });
+}
+
+export async function updateTeamMemberStatusApi(userId: string, status: 'active' | 'suspended'): Promise<any> {
+  return apiRequest<any>(`/team/members/${encodeURIComponent(userId)}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+}
+
+export async function changePasswordApi(currentPassword: string, newPassword: string): Promise<any> {
+  const result = await apiRequest<{ token: string; session: any }>('/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  localStorage.setItem('auth_token', result.token);
+  return result.session;
+}
