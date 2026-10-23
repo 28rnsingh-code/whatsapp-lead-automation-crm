@@ -319,6 +319,14 @@ export async function executeImportBatch(
   skippedCount: number;
   failedCount: number;
 }> {
+  // Old signed tokens may carry a legacy user slug. Convert only the documented
+  // Rohan alias here; all other identifiers must already be canonical UUIDs.
+  const canonicalUserId = userId === 'user_rohan_singh' ? DEFAULT_USER_ID : userId;
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidPattern.test(canonicalUserId)) {
+    throw new Error('Authenticated user ID must be a canonical UUID before import persistence.');
+  }
+
   const dbConfig = resolveDatabaseConfig();
   const jobId = `job-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
   let importedCount = 0;
@@ -383,7 +391,7 @@ export async function executeImportBatch(
                 defaultStageId,
                 row.dealValueMinorUnits || 0,
                 row.notes || '',
-                userId || DEFAULT_USER_ID,
+                canonicalUserId,
               ]
             );
             importedCount++;
@@ -438,7 +446,7 @@ export async function executeImportBatch(
           failedCount,
           strategy,
           JSON.stringify(errors.slice(0, 100)),
-          userId || DEFAULT_USER_ID,
+          canonicalUserId,
         ]
       );
     } catch {}
@@ -451,7 +459,7 @@ export async function executeImportBatch(
         ) VALUES ($1, $2, 'leads_bulk_imported', 'import_job', gen_random_uuid(), $3);`,
         [
           tenantId,
-          userId || DEFAULT_USER_ID,
+          canonicalUserId,
           JSON.stringify({
             filename,
             importedCount,
