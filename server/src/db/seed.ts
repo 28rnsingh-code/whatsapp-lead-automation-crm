@@ -150,6 +150,21 @@ export async function seedDefaults(): Promise<SeedResult> {
     }
   }
 
+  // Seed the same pipeline vocabulary into the isolated public demo workspace.
+  for (const st of stageDefs) {
+    const existingDemoStage = await pool.query(
+      'SELECT id FROM pipeline_stages WHERE tenant_id = $1 AND name = $2 LIMIT 1;',
+      [demoTenantId, st.name],
+    );
+    if (existingDemoStage.rows.length === 0) {
+      await pool.query(
+        `INSERT INTO pipeline_stages (tenant_id, name, sort_order, color_token, is_won, is_lost, active)
+         VALUES ($1, $2, $3, $4, $5, $6, true);`,
+        [demoTenantId, st.name, st.sortOrder, st.color, st.isWon, st.isLost],
+      );
+    }
+  }
+
   console.log(`[Seed] ✓ Defaults active. Tenant ID: ${tenantId}, Stages seeded: ${stages.length}`);
   return { tenantId, userId, stages };
 }
