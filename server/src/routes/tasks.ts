@@ -6,6 +6,11 @@ import { DEFAULT_TENANT_ID, DEFAULT_USER_ID } from '../db/seed';
 
 const router = Router();
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const LEGACY_USER_UUID_MAP: Record<string, string> = {
+  user_rohan_singh: DEFAULT_USER_ID,
+};
+
 const TENANT_UUID_MAP: Record<string, string> = {
   tenant_bring_my_bite: DEFAULT_TENANT_ID,
   tenant_automics_labs: 'a0000000-0000-0000-0000-000000000002',
@@ -148,7 +153,15 @@ router.get('/', requireAuth, requireTenant(), async (req: Request, res: Response
 router.post('/', requireAuth, requireTenant(), async (req: Request, res: Response): Promise<void> => {
   const tenantId = toDbTenantId(req.tenantContext!.tenantId);
   const rawTenantId = req.tenantContext!.tenantId;
-  const userId = req.userId || DEFAULT_USER_ID;
+  const rawUserId = req.userId || '';
+  const userId = LEGACY_USER_UUID_MAP[rawUserId] || rawUserId;
+  if (!UUID_PATTERN.test(userId)) {
+    res.status(403).json({
+      success: false,
+      error: { code: 'TENANT_ACCESS_DENIED', message: 'Authenticated user identity is not a valid database identity.', requestId: req.requestId || 'req_unknown' },
+    });
+    return;
+  }
   const { title, leadId, leadName, company, taskType = 'Call', dueAt, priority = 'Medium' } = req.body;
   const requestId = req.requestId || 'req_unknown';
 
