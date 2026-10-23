@@ -400,6 +400,14 @@ export async function updateWhatsAppConfigApi(payload: any): Promise<any> {
   });
 }
 
+/** Verifies saved WhatsApp credentials against the configured provider; never reports a simulated HTTP success. */
+export async function testWhatsAppConfigApi(): Promise<{
+  validation: { valid: boolean; error?: string };
+  config?: WhatsAppConfigResponse['config'];
+}> {
+  return apiRequest('/whatsapp/config/test', { method: 'POST' });
+}
+
 export interface WhatsAppMessageItem {
   id: string;
   tenantId: string;
@@ -428,6 +436,7 @@ export async function sendWhatsAppMessageApi(payload: {
   templateName?: string;
   templateParameters?: string[];
   leadId?: string;
+  idempotencyKey?: string;
 }): Promise<WhatsAppMessageItem> {
   return apiRequest<WhatsAppMessageItem>('/whatsapp/messages', {
     method: 'POST',
