@@ -13,6 +13,7 @@ import {
   decryptSecret,
 } from '../services/whatsapp/adapterRegistry';
 import { WhatsAppCredentials, WhatsAppTemplate } from '../services/whatsapp/types';
+import { reserveMonthlyUsage, releaseMonthlyUsage, PlanQuotaExceededError, SubscriptionAccessError } from '../services/billing/usageMetering';
 
 const router = Router();
 
@@ -582,20 +583,70 @@ router.post('/messages', requireAuth, requireTenant(), async (req: Request, res:
     return;
   }
 
-  // Send message through provider adapter
-  const sendResult = await adapter.sendMessage({
-    tenantId,
-    recipientPhone: recipientPhone.trim(),
-    messageType: templateName ? 'template' : 'text',
-    body: body || `Template: ${templateName}`,
-    templateName,
-    templateParameters,
-    idempotencyKey,
-    leadId,
-    credentials: rawConfig,
-  });
+  // Reserve a monthly message before any real provider call.
+  let usageReservation;
+  try {
+    usageReservation = await reserveMonthlyUsage(tenantId, 'messages', 1);
+  } catch (error) {
+    if (error instanceof PlanQuotaExceededError) {
+      res.status(429).json({
+        success: false,
+        error: {
+          code: error.code,
+          message: `Your monthly WhatsApp message limit has been reached (${error.used}/${error.limit}). Upgrade your plan to continue.`,
+          metric: error.metric,
+          used: error.used,
+          limit: error.limit,
+          requestId,
+        },
+      });
+      return;
+    }
+    if (error instanceof SubscriptionAccessError) {
+      res.status(402).json({
+        success: false,
+        error: { code: error.code, message: 'This workspace subscription is not active. Update the plan before sending messages.', status: error.subscriptionStatus, requestId },
+      });
+      return;
+    }
+    console.error('[WhatsApp Messages] Monthly usage reservation failed', { requestId, error });
+    sendWhatsAppUnavailable(res, requestId, 'USAGE_METER_UNAVAILABLE', 'Message quota could not be verified. No outbound message was sent.');
+    return;
+  }
+
+  // Send message through provider adapter. Release the quota reservation only when
+  // the provider definitively reports a failed send; ambiguous timeouts stay counted
+  // so retry uncertainty cannot silently exceed the monthly allowance.
+  let sendResult;
+  try {
+    sendResult = await adapter.sendMessage({
+      tenantId,
+      recipientPhone: recipientPhone.trim(),
+      messageType: templateName ? 'template' : 'text',
+      body: body || `Template: ${templateName}`,
+      templateName,
+      templateParameters,
+      idempotencyKey,
+      leadId,
+      credentials: rawConfig,
+    });
+  } catch (error) {
+    console.error('[WhatsApp Messages] Provider call threw after quota reservation', { requestId, error });
+    res.status(502).json({
+      success: false,
+      error: {
+        code: 'PROVIDER_RESULT_UNKNOWN',
+        message: 'The provider result is unknown. The message quota remains reserved to avoid duplicate delivery and quota bypass.',
+        requestId,
+      },
+    });
+    return;
+  }
 
   if (!sendResult.success) {
+    await releaseMonthlyUsage(usageReservation).catch((error) => {
+      console.error('[WhatsApp Messages] Could not release failed-send reservation', { requestId, error });
+    });
     res.status(502).json({
       success: false,
       error: {
