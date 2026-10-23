@@ -74,7 +74,7 @@ export class CloudApiWhatsAppAdapter implements WhatsAppProviderAdapter {
   }
 
   async sendMessage(params: OutboundMessageParams): Promise<OutboundMessageResult> {
-    const { recipientPhone, body, messageType, templateName, templateParameters, credentials } = params;
+    const { recipientPhone, body, messageType, templateName, templateLanguage, templateParameters, credentials } = params;
 
     if (!credentials.phoneNumberId || !credentials.accessToken) {
       return {
@@ -95,7 +95,7 @@ export class CloudApiWhatsAppAdapter implements WhatsAppProviderAdapter {
         type: 'template',
         template: {
           name: templateName,
-          language: { code: 'en' },
+          language: { code: templateLanguage || 'en' },
           components: templateParameters && templateParameters.length > 0 ? [
             {
               type: 'body',
