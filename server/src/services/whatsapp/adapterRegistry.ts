@@ -61,7 +61,6 @@ export function maskCredentials(config: any): MaskedWhatsAppCredentials {
 // AES-256-GCM encryption for provider secrets. Production must never encrypt
 // customer credentials with the historical hard-coded development key.
 const LEGACY_DEVELOPMENT_ENCRYPTION_SECRET = 'oneclick_crm_secret_key_32bytes!';
-const isProductionRuntime = () => process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
 
 export function hasSecureEncryptionKey(): boolean {
   const secret = process.env.ENCRYPTION_KEY || '';
