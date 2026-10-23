@@ -84,6 +84,16 @@ async function seedTestFixtures(): Promise<void> {
     [automicsTenantId, DEFAULT_USER_ID, roles.get(`${automicsTenantId}:Admin`)]
   );
 
+  // The alternate-workspace API tests use this dedicated test identity. Grant
+  // membership only in Automics Labs so both tenant-scoped test accounts can be
+  // authorized independently without weakening cross-tenant isolation.
+  await pool.query(
+    `INSERT INTO memberships (tenant_id, user_id, role_id, status)
+     VALUES ($1, $2, $3, 'active')
+     ON CONFLICT (tenant_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id, status = EXCLUDED.status`,
+    [automicsTenantId, otherUserId, roles.get(`${automicsTenantId}:Admin`)]
+  );
+
   // Seed minimal rows used by API tests so "initial list" endpoint assertions are deterministic.
   await pool.query(
     `INSERT INTO tasks (tenant_id, title, task_type, owner_user_id, due_at, priority, status, created_by)
