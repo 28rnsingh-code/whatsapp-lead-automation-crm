@@ -21,6 +21,8 @@ export interface AuthTokenPayload {
   defaultTenantId?: string;
   /** Public-demo session identifier; only issued by the gated demo login flow. */
   demoSessionId?: string;
+  /** Persistent anonymous browser identifier used for a demo visitor quota. */
+  demoVisitorId?: string;
   demo?: boolean;
   iat?: number;
   exp?: number;
