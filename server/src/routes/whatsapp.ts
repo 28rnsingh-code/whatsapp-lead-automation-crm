@@ -151,7 +151,7 @@ const PREDEFINED_TEMPLATES: WhatsAppTemplate[] = [
     name: 'welcome_lead_intro',
     language: 'en',
     category: 'UTILITY',
-    header: 'Welcome to {{company}}',
+    header: 'Welcome',
     body: 'Hello {{name}}, thank you for contacting us! A dedicated relationship manager will reach out shortly.',
     status: 'APPROVED',
   },
