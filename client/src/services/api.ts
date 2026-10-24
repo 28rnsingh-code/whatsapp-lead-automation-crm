@@ -578,6 +578,7 @@ export interface TenantUsageResponse {
       maxLeads: number;
       maxImportsPerMonth: number;
       maxMessagesPerMonth: number;
+      maxEmailsPerMonth: number;
       maxAiTokens: number;
     };
   };
@@ -588,6 +589,9 @@ export interface TenantUsageResponse {
     messagesCount: number;
     maxMessages: number;
     messagesPct: number;
+    emailsCount: number;
+    maxEmails: number;
+    emailsPct: number;
     importRowsCount: number;
     maxImports: number;
     aiTokensCount: number;
@@ -631,11 +635,18 @@ export async function changePlanApi(planId: string): Promise<any> {
   });
 }
 
+// Email automation test endpoint (one recipient per request).
+export interface SendTestEmailResult {
+  status: 'simulated' | 'accepted';
+  provider: 'demo' | 'brevo';
+  providerMessageId: string;
+  idempotentReplay?: boolean;
+  notice: string;
+}
 
-
-
-
-
+export async function sendTestEmailApi(payload: { to: string; subject: string; textContent: string; idempotencyKey: string }): Promise<SendTestEmailResult> {
+  return apiRequest<SendTestEmailResult>('/email/send', { method: 'POST', body: JSON.stringify(payload) });
+}
 
 // ==========================================
 // Workspace team, seat caps and member passwords
