@@ -24,6 +24,21 @@ export function createApp(): Express {
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
   app.use(requestIdMiddleware);
 
+  // The Vercel project is the API service. Return a useful response at its root
+  // instead of Express's default "Cannot GET /" HTML 404.
+  app.get('/', (req, res) => {
+    res.status(200).json({
+      success: true,
+      data: {
+        service: 'oneclick-automics-crm-api',
+        status: 'online',
+        health: '/api/health',
+        authentication: '/api/auth/login',
+      },
+      meta: { requestId: req.requestId || 'req_unknown' },
+    });
+  });
+
   // Mount API Routes
   app.use('/api', healthRoutes);
   app.use('/api/auth', authRoutes);
