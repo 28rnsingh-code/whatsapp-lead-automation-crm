@@ -174,7 +174,14 @@ export const ReportsPage: React.FC = () => {
           deltaType="positive"
           icon="📱"
         />
+
         <KpiCard
+          label="Email Volume"
+          value={usage ? usage.usage.emailsCount + ' / ' + usage.usage.maxEmails : '...'}
+          delta={usage ? usage.usage.emailsPct + '% of monthly allowance' : 'Computing'}
+          deltaType={usage && usage.usage.emailsPct > 80 ? 'negative' : 'positive'}
+          icon="✉️"
+        />        <KpiCard
           label="Reporting Window"
           value={range === 'all' ? 'All Time' : `Last ${range.toUpperCase()}`}
           delta="Timezone UTC+05:30 Safe"
