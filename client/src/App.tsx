@@ -108,7 +108,7 @@ export const App: React.FC = () => {
       case 'audit':
         return <AuditPage />;
       case 'auth':
-        return <AuthPage />;
+        return <AuthPage onLoginSuccess={() => { setIsAuthenticated(true); setCurrentPage('dashboard'); }} />;
       default:
         return <DashboardPage onNavigate={setCurrentPage} />;
     }
