@@ -19,6 +19,7 @@ const READ_PREFIXES = [
   '/reports',
   '/whatsapp/messages',
   '/whatsapp/templates',
+  '/email/send',
   '/billing/plans',
   '/billing/subscription',
 ];
@@ -115,9 +116,9 @@ export async function demoActionQuota(req: Request, res: Response, next: NextFun
     return next();
   }
 
-  // Demo supports safe lead/task experiments and one simulated WhatsApp action.
+  // Demo supports safe lead/task experiments and simulated email/WhatsApp sends.
   const isAllowedMutation =
-    (req.method === 'POST' && ['/leads', '/tasks', '/contacts', '/whatsapp/messages'].includes(path)) ||
+    (req.method === 'POST' && ['/leads', '/tasks', '/contacts', '/whatsapp/messages', '/email/send'].includes(path)) ||
     (['PATCH', 'PUT'].includes(req.method) && (/^\/leads\/[0-9a-f-]+$/i.test(path) || /^\/tasks\/[0-9a-f-]+$/i.test(path)));
   if (!isAllowedMutation) {
     res.status(403).json({

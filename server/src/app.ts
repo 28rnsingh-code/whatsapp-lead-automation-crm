@@ -15,6 +15,7 @@ import whatsappRoutes from './routes/whatsapp';
 import aiRoutes from './routes/ai';
 import reportRoutes from './routes/reports';
 import billingRoutes from './routes/billing';
+import emailRoutes from './routes/email';
 import { requireProductionDatabaseReady } from './middleware/databaseReadiness';
 import { auditTrailMiddleware } from './middleware/auditTrail';
 import { demoActionQuota } from './middleware/demoActionQuota';
@@ -58,6 +59,7 @@ export function createApp(): Express {
   app.use('/api/ai', aiRoutes);
   app.use('/api/reports', reportRoutes);
   app.use('/api/billing', billingRoutes);
+  app.use('/api/email', emailRoutes);
   app.use('/api/import', importExportRoutes);
   app.use('/api', importExportRoutes); // also mounts /api/export/leads
 

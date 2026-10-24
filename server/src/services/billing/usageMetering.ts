@@ -2,13 +2,14 @@ import { PoolClient } from 'pg';
 import { pool } from '../../db';
 import { PLAN_DEFINITIONS, PlanLimits, PlanTier } from './types';
 
-export type MonthlyUsageMetric = 'messages' | 'imports' | 'aiTokens';
+export type MonthlyUsageMetric = 'messages' | 'emails' | 'imports' | 'aiTokens';
 
 const METRICS: Record<MonthlyUsageMetric, {
-  column: 'messages_count' | 'imports_count' | 'ai_tokens_count';
-  limitKey: 'maxMessagesPerMonth' | 'maxImportsPerMonth' | 'maxAiTokens';
+  column: 'messages_count' | 'emails_count' | 'imports_count' | 'ai_tokens_count';
+  limitKey: 'maxMessagesPerMonth' | 'maxEmailsPerMonth' | 'maxImportsPerMonth' | 'maxAiTokens';
 }> = {
   messages: { column: 'messages_count', limitKey: 'maxMessagesPerMonth' },
+  emails: { column: 'emails_count', limitKey: 'maxEmailsPerMonth' },
   imports: { column: 'imports_count', limitKey: 'maxImportsPerMonth' },
   aiTokens: { column: 'ai_tokens_count', limitKey: 'maxAiTokens' },
 };
@@ -92,6 +93,7 @@ async function readPlanLimits(client: PoolClient, tenantId: string): Promise<{ p
       maxLeads: numericOrDefault('maxLeads'),
       maxImportsPerMonth: numericOrDefault('maxImportsPerMonth'),
       maxMessagesPerMonth: numericOrDefault('maxMessagesPerMonth'),
+      maxEmailsPerMonth: numericOrDefault('maxEmailsPerMonth'),
       maxAiTokens: numericOrDefault('maxAiTokens'),
     },
   };

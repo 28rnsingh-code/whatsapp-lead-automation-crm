@@ -173,6 +173,7 @@ router.get('/usage', requireAuth, requireTenant(), async (req: Request, res: Res
         usage: {
           leadsCount: 12, maxLeads: defaultPlan.limits.maxLeads, leadsPct: Math.round((12 / defaultPlan.limits.maxLeads) * 100),
           messagesCount: 45, maxMessages: defaultPlan.limits.maxMessagesPerMonth, messagesPct: Math.round((45 / defaultPlan.limits.maxMessagesPerMonth) * 100),
+          emailsCount: 0, maxEmails: defaultPlan.limits.maxEmailsPerMonth, emailsPct: 0,
           importsCount: 2, importRowsCount: 150, maxImports: defaultPlan.limits.maxImportsPerMonth, importsPct: 20,
           aiRequestsCount: 10, aiTokensCount: 2400, maxAiTokens: defaultPlan.limits.maxAiTokens, aiTokensPct: Math.round((2400 / defaultPlan.limits.maxAiTokens) * 100),
           membersCount: 1, maxMembers: defaultPlan.limits.maxMembers,
@@ -188,7 +189,7 @@ router.get('/usage', requireAuth, requireTenant(), async (req: Request, res: Res
       pool.query('SELECT plan_id, status, limits FROM tenant_subscriptions WHERE tenant_id = $1 LIMIT 1', [tenantId]),
       pool.query('SELECT COUNT(*)::int AS count FROM leads WHERE tenant_id = $1 AND archived_at IS NULL', [tenantId]),
       pool.query(
-        `SELECT messages_count AS \"messagesCount\", imports_count AS \"importsCount\",
+        `SELECT messages_count AS \"messagesCount\", emails_count AS \"emailsCount\", imports_count AS \"importsCount\",
                 import_rows_count AS \"importRowsCount\", ai_requests_count AS \"aiRequestsCount\",
                 ai_tokens_count AS \"aiTokensCount\"
          FROM tenant_usage WHERE tenant_id = $1 AND period_key = $2 LIMIT 1`,
@@ -216,12 +217,14 @@ router.get('/usage', requireAuth, requireTenant(), async (req: Request, res: Res
       maxLeads: getLimit('maxLeads'),
       maxImportsPerMonth: getLimit('maxImportsPerMonth'),
       maxMessagesPerMonth: getLimit('maxMessagesPerMonth'),
+      maxEmailsPerMonth: getLimit('maxEmailsPerMonth'),
       maxAiTokens: getLimit('maxAiTokens'),
     };
     const plan = { ...basePlan, limits };
     const usage = usageRes.rows[0] || {};
     const leadsCount = Number(leadsCountRes.rows[0]?.count || 0);
     const messagesCount = Number(usage.messagesCount || 0);
+    const emailsCount = Number(usage.emailsCount || 0);
     const importsCount = Number(usage.importsCount || 0);
     const importRowsCount = Number(usage.importRowsCount || 0);
     const aiRequestsCount = Number(usage.aiRequestsCount || 0);
@@ -238,6 +241,7 @@ router.get('/usage', requireAuth, requireTenant(), async (req: Request, res: Res
         usage: {
           leadsCount, maxLeads: limits.maxLeads, leadsPct: pct(leadsCount, limits.maxLeads),
           messagesCount, maxMessages: limits.maxMessagesPerMonth, messagesPct: pct(messagesCount, limits.maxMessagesPerMonth),
+          emailsCount, maxEmails: limits.maxEmailsPerMonth, emailsPct: pct(emailsCount, limits.maxEmailsPerMonth),
           importsCount, importRowsCount, maxImports: limits.maxImportsPerMonth, importsPct: pct(importsCount, limits.maxImportsPerMonth),
           aiRequestsCount, aiTokensCount, maxAiTokens: limits.maxAiTokens, aiTokensPct: pct(aiTokensCount, limits.maxAiTokens),
           membersCount, maxMembers: limits.maxMembers,

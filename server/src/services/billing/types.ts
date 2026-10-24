@@ -7,6 +7,7 @@ export interface PlanLimits {
   maxLeads: number;
   maxImportsPerMonth: number;
   maxMessagesPerMonth: number;
+  maxEmailsPerMonth: number;
   maxAiTokens: number;
 }
 
@@ -28,9 +29,10 @@ export const PLAN_DEFINITIONS: Record<PlanTier, PlanDefinition> = {
       maxLeads: 1000,
       maxImportsPerMonth: 10,
       maxMessagesPerMonth: 500,
+      maxEmailsPerMonth: 300,
       maxAiTokens: 50000,
     },
-    features: ['Up to 2 team members', '1,000 Active Leads', '10 Excel/CSV Imports/mo', '500 WhatsApp Messages/mo', 'Basic AI Auto-Reply'],
+    features: ['Up to 2 team members', '1,000 Active Leads', '10 Excel/CSV Imports/mo', '500 WhatsApp Messages/mo', '300 Emails/mo', 'Basic AI Auto-Reply'],
   },
   growth: {
     id: 'growth',
@@ -41,9 +43,10 @@ export const PLAN_DEFINITIONS: Record<PlanTier, PlanDefinition> = {
       maxLeads: 10000,
       maxImportsPerMonth: 100,
       maxMessagesPerMonth: 5000,
+      maxEmailsPerMonth: 3000,
       maxAiTokens: 500000,
     },
-    features: ['Up to 5 team members', '10,000 Active Leads', '100 Imports/mo', '5,000 WhatsApp Messages/mo', 'Advanced Multi-model AI', 'Custom Pipelines'],
+    features: ['Up to 5 team members', '10,000 Active Leads', '100 Imports/mo', '5,000 WhatsApp Messages/mo', '3,000 Emails/mo', 'Advanced Multi-model AI', 'Custom Pipelines'],
   },
   enterprise: {
     id: 'enterprise',
@@ -54,9 +57,10 @@ export const PLAN_DEFINITIONS: Record<PlanTier, PlanDefinition> = {
       maxLeads: 100000,
       maxImportsPerMonth: 1000,
       maxMessagesPerMonth: 50000,
+      maxEmailsPerMonth: 10000,
       maxAiTokens: 5000000,
     },
-    features: ['Up to 10 team members', '100,000 Active Leads', '50,000 WhatsApp Messages/mo', 'Dedicated WhatsApp Number', 'Custom Integrations', 'SLA Support'],
+    features: ['Up to 10 team members', '100,000 Active Leads', '50,000 WhatsApp Messages/mo', '10,000 Emails/mo', 'Dedicated WhatsApp Number', 'Custom Integrations', 'SLA Support'],
   },
 };
 
