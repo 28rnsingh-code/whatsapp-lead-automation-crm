@@ -78,7 +78,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Nav List */}
       <nav className="nav-group" aria-label="Main Navigation">
-        {NAV_ITEMS.filter((item) => !isDemo || ['dashboard', 'leads', 'pipeline', 'followups', 'contacts', 'reports', 'whatsapp', 'auth'].includes(item.id)).map((item) => (
+        {NAV_ITEMS.filter((item) => !isDemo || ['dashboard', 'leads', 'pipeline', 'followups', 'contacts', 'reports', 'whatsapp', 'integrations', 'auth'].includes(item.id)).map((item) => (
           <button
             key={item.id}
             type="button"
