@@ -18,6 +18,10 @@ import billingRoutes from './routes/billing';
 export function createApp(): Express {
   const app = express();
 
+  // Vercel terminates the client connection at its trusted edge proxy. Trust one
+  // proxy hop so express-rate-limit can safely resolve the client IP from forwarded headers.
+  app.set('trust proxy', 1);
+
   // Standard Middlewares
   app.use(cors());
   app.use(express.json({ limit: '15mb' }));
