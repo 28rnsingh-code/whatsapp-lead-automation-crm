@@ -38,6 +38,34 @@ export function createApp(): Express {
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
   app.use(requestIdMiddleware);
 
+  // Browser visits to the API host should open the actual CRM portal.
+  app.get('/', (_req, res) => {
+    const portalUrl = process.env.CRM_PORTAL_URL?.trim();
+    if (!portalUrl) {
+      res.status(503).json({
+        success: false,
+        error: { code: 'CRM_PORTAL_URL_NOT_CONFIGURED', message: 'The CRM portal destination is not configured for this deployment.' },
+      });
+      return;
+    }
+    try {
+      const destination = new URL(portalUrl);
+      if (destination.protocol !== 'https:' || !destination.hostname.endsWith('.vercel.app')) {
+        res.status(503).json({
+          success: false,
+          error: { code: 'CRM_PORTAL_URL_INVALID', message: 'The CRM portal destination must be a verified HTTPS Vercel deployment URL.' },
+        });
+        return;
+      }
+      res.redirect(302, destination.toString());
+    } catch {
+      res.status(503).json({
+        success: false,
+        error: { code: 'CRM_PORTAL_URL_INVALID', message: 'The CRM portal destination is not a valid URL.' },
+      });
+    }
+  });
+
   // Mount API Routes
   app.use('/api', healthRoutes);
   // Keep demo/in-memory route fallbacks out of production whenever PostgreSQL is not ready.
