@@ -1,6 +1,6 @@
 # Public Demo, Usage Limits, Plans and Integration Readiness
 
-Updated: 23 October 2026
+Updated: 24 October 2026
 
 ## Public demo behavior
 
@@ -9,7 +9,7 @@ Updated: 23 October 2026
 - Demo access tokens expire after two hours.
 - Five write-action attempts are enforced atomically on the server and tied to a persistent browser-generated UUID retained in local storage. The browser sees the count through `GET /api/demo/usage`.
 - Allowed demo writes are create lead, create task, create contact, update a lead/task and a simulated WhatsApp message. Other mutation paths are blocked; module navigation is also restricted.
-- Demo outbound WhatsApp writes a record marked `simulated`; it does not call Meta or another provider. Demo template names are sample fixtures, not live WhatsApp templates.
+- Demo outbound WhatsApp and email actions are explicitly simulated. They do not call Meta, Brevo or another provider and never contact the entered recipient/phone.
 - The client instructs visitors not to use production customer data. Demo quota is a product guard, not an anti-fraud guarantee: a visitor who clears site storage or uses another browser can create a new visitor identity. Add edge/WAF/IP-based abuse protection before a high-traffic public launch.
 - Demo messages/usage require the database and migrations. Failures are returned as errors; the quota is not silently bypassed.
 
@@ -27,13 +27,13 @@ The public demo account is created/updated by `server/src/db/seed.ts`. The DB mi
 
 These are the values currently defined in `server/src/services/billing/types.ts`; seat caps are also enforced by the tenant-scoped team API. They are not a payment checkout confirmation.
 
-| Plan | Current price/month | Team seats | Active leads | WhatsApp messages/month | Imports/month |
+| Plan | Current price/month | Team seats | Active leads | WhatsApp messages/month | Emails/month | Imports/month |
 |---|---:|---:|---:|---:|---:|
-| Starter | ₹2,999 | 2 | 1,000 | 500 | 10 |
-| Growth | ₹7,999 | 5 | 10,000 | 5,000 | 100 |
-| Enterprise | ₹19,999 | 10 | 100,000 | 50,000 | 1,000 |
+| Starter | ₹2,999 | 2 | 1,000 | 500 | 300 | 10 |
+| Growth | ₹7,999 | 5 | 10,000 | 5,000 | 3,000 | 100 |
+| Enterprise | ₹19,999 | 10 | 100,000 | 50,000 | 10,000 | 1,000 |
 
-Current subscription controls update CRM entitlements in sandbox/mock mode only. They do not collect payment. Stripe webhooks now require signature verification and are idempotent, but a real checkout/session creator, provider account, live event mapping and signed staging verification are not configured. Razorpay is not implemented. Invoice/tax handling, renewal/cancellation and delinquency suspension must be configured and tested before selling subscriptions. An email allowance/rate is not part of the current plan schema. Do not advertise a free customer email allowance: demo sends are simulated, and real email sends should remain disabled until the business defines included volume/overage charging and configures a verified provider. The free tiers from email providers are development/operational constraints, not a customer-facing product plan.
+Current subscription controls update CRM entitlements in sandbox/mock mode only. They do not collect payment. Stripe webhooks now require signature verification and are idempotent, but a real checkout/session creator, provider account, live event mapping and signed staging verification are not configured. Razorpay is not implemented. Invoice/tax handling, renewal/cancellation and delinquency suspension must be configured and tested before selling subscriptions. Email sends have explicit paid-plan allowances: Starter 300, Growth 3,000 and Enterprise 10,000 emails/month. This is not a free customer CRM plan; the public demo is limited to five simulated write/test actions. Live email uses Brevo only when a verified sender and server-side API key are configured. Sends are blocked at the quota; automatic overage billing is not implemented.
 
 
 Historical AI token usage cannot be reconstructed because prior AI calls did not persist provider token counts. The `ai_tokens_count` counter begins from the first metered request after this release; do not treat its initial value as historical lifetime usage.
@@ -46,7 +46,7 @@ Historical AI token usage cannot be reconstructed because prior AI calls did not
 
 ## Email
 
-There is currently no verified transactional-email sender integrated into the password-recovery flow. The API intentionally returns a generic confirmation and does not send an email. Do not show a “reset link sent” success message until a real token is generated, persisted safely, sent through a verified provider, expired, consumed once and tested. No email API key is set by this change. Choose a provider and configure sender/domain authentication and secret storage before enabling email delivery. Provider free tiers must not be advertised as the customer plan; set the product's included email quota and overage policy as paid-plan terms.
+Controlled test-email sending is wired through the server-side Brevo API, with per-plan quotas, persistent attempt records, idempotency and demo-only simulation. This change does not configure a provider key or verified sender. Forgot-password still does not send reset links; a one-time expiring reset-token workflow and verified sender must be completed before advertising self-service account recovery. Provider free tiers are not customer plan tiers.
 
 ## Deployment release gate
 
@@ -57,5 +57,5 @@ Before production:
 4. Change the bootstrap admin password; no default admin credential may remain in production.
 5. Configure real Meta credentials and webhook verification; perform an opt-in test delivery with a controlled recipient.
 6. Configure `STRIPE_WEBHOOK_SECRET` only if Stripe is selected; mock billing webhooks are test-only and Razorpay remains unsupported. Verify real signed Stripe test events before enabling any production webhook.
-7. Verify real transactional email for member invitations and password reset; these are not wired to a sender yet. Confirm platform-level plan-change authorization before connecting live checkout.
+7. Configure Brevo server-side credentials and a verified sender; verify email acceptance and provider logs. Member-invitation and password-recovery emails remain separate release gates. Confirm platform-level plan-change authorization before live checkout.
 8. Test end-to-end browser journeys and tenant isolation in a deployed preview. A successful build alone is not a production sign-off.
