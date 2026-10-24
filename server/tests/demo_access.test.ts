@@ -69,6 +69,27 @@ describe('Public demo isolation and usage limits', () => {
     expect(limited.body.error.limit).toBe(5);
   });
 
+  it('simulates an email send without calling a provider or consuming paid email quota', async () => {
+    const visitorId = crypto.randomUUID();
+    const login = await loginDemo(visitorId);
+    expect(login.status).toBe(200);
+    const res = await request(app).post('/api/email/send')
+      .set('Authorization', 'Bearer ' + login.body.data.token)
+      .set('x-tenant-id', DEMO_TENANT)
+      .send({ to: 'demo-recipient@example.com', subject: 'Demo automation test', textContent: 'Never send outside demo.', idempotencyKey: crypto.randomUUID() });
+    expect(res.status).toBe(202);
+    expect(res.body.data.status).toBe('simulated');
+    expect(res.body.data.provider).toBe('demo');
+    expect(res.body.meta.demoMode).toBe(true);
+    expect(res.body.meta.providerSent).toBe(false);
+    expect(res.body.data.notice).toMatch(/No email was sent/);
+    const usage = await request(app).get('/api/demo/usage')
+      .set('Authorization', 'Bearer ' + login.body.data.token)
+      .set('x-tenant-id', DEMO_TENANT);
+    expect(usage.status).toBe(200);
+    expect(usage.body.data).toMatchObject({ limit: 5, used: 1, remaining: 4, simulatedOutbound: true });
+  });
+
   it('simulates a WhatsApp send and sample templates without calling a provider', async () => {
     const visitorId = crypto.randomUUID();
     const login = await loginDemo(visitorId);
