@@ -64,6 +64,15 @@ describe('Monthly plan quota enforcement', () => {
     expect(fulfilled.map(result => result.status === 'fulfilled' ? result.value.usedAfter : 0).sort()).toEqual([1, 2]);
   });
 
+  it('enforces the paid plan monthly email quota atomically', async () => {
+    const tenantId = await createQuotaTenant({ maxEmailsPerMonth: 2 });
+    const first = await reserveMonthlyUsage(tenantId, 'emails', 1, TEST_PERIOD);
+    const second = await reserveMonthlyUsage(tenantId, 'emails', 1, TEST_PERIOD);
+    expect(first.usedAfter).toBe(1);
+    expect(second.usedAfter).toBe(2);
+    await expect(reserveMonthlyUsage(tenantId, 'emails', 1, TEST_PERIOD)).rejects.toBeInstanceOf(PlanQuotaExceededError);
+  });
+
   it('reserves, releases and reconciles monthly import usage', async () => {
     const tenantId = await createQuotaTenant({ maxImportsPerMonth: 2 });
     const reservation = await reserveMonthlyUsage(tenantId, 'imports', 1, TEST_PERIOD);
