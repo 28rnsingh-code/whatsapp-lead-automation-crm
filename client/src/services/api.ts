@@ -5,7 +5,7 @@ const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(
 const API_BASE = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
   ? `${configuredApiBase}/api`
   : configuredApiBase;
-function getTenantIdFromToken(token: string): string | null {
+export function getDefaultTenantIdFromToken(token: string): string | null {
   try {
     const payload = token.split('.')[1];
     if (!payload) return null;
@@ -17,11 +17,15 @@ function getTenantIdFromToken(token: string): string | null {
   }
 }
 
-let inFlightAuth: Promise<string> | null = null;
+function getTenantIdFromToken(token: string): string | null {
+  const selectedTenantId = localStorage.getItem('active_tenant_id');
+  return selectedTenantId || getDefaultTenantIdFromToken(token);
+}
 
 /**
  * Retrieves the current authentication JWT from localStorage.
- * If missing or invalid, automatically authenticates with default dev credentials.
+ * Missing credentials are handled by the application's login screen; this
+ * helper never silently logs a user in with demo credentials.
  */
 export async function getAuthToken(): Promise<string> {
   const existingToken = localStorage.getItem('auth_token');
@@ -33,12 +37,13 @@ export async function getAuthToken(): Promise<string> {
 }
 
 /**
- * Authenticated API Request Wrapper with automatic 401 token refresh retry.
+ * Authenticated API request wrapper. A 401 clears the stale token and notifies
+ * the app shell so the user returns to the login screen instead of retrying
+ * the same request without credentials.
  */
 async function apiRequest<T>(
   endpoint: string,
-  options: RequestInit = {},
-  isRetry = false
+  options: RequestInit = {}
 ): Promise<T> {
   const token = await getAuthToken();
   const headers = new Headers(options.headers || {});
@@ -54,12 +59,11 @@ async function apiRequest<T>(
     headers,
   });
 
-  if (response.status === 401 && !isRetry) {
+  const result = await response.json().catch(() => ({} as any));
+  if (response.status === 401) {
     localStorage.removeItem('auth_token');
-    return apiRequest<T>(endpoint, options, true);
+    window.dispatchEvent(new Event('auth:unauthorized'));
   }
-
-  const result = await response.json();
   if (!response.ok || !result.success) {
     const errorObj = result.error || {
       code: `HTTP_${response.status}`,
@@ -74,6 +78,49 @@ async function apiRequest<T>(
 
   return result.data as T;
 }
+
+/** Validates the current token against the persistent backend session. */
+export async function fetchAuthSessionApi(): Promise<any> {
+  return apiRequest<any>('/auth/session', { method: 'GET' });
+}
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  slug: string;
+  status: 'active' | 'suspended' | 'trial';
+  timezone: string;
+  currency: string;
+  locale: string;
+  createdAt: string;
+  updatedAt: string;
+  role: string;
+}
+
+export async function fetchWorkspacesApi(): Promise<WorkspaceSummary[]> {
+  return apiRequest<WorkspaceSummary[]>('/workspaces', { method: 'GET' });
+}
+
+export interface AuditEventRecord {
+  id: string;
+  tenantId: string;
+  actorUserId: string | null;
+  actor: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  occurredAt: string;
+  requestId: string | null;
+  metadata: Record<string, unknown> | null;
+  status: 'SUCCESS' | 'FAILED';
+  entity: string;
+  source: string;
+}
+
+export async function fetchAuditEventsApi(limit = 100): Promise<AuditEventRecord[]> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  return apiRequest<AuditEventRecord[]>(`/audit?${query.toString()}`, { method: 'GET' });
+}
+
 
 export interface FetchLeadsParams {
   q?: string;
@@ -375,6 +422,7 @@ export interface WhatsAppConfigResponse {
     businessAccountId?: string;
     accessTokenMasked?: string;
     appSecretMasked?: string;
+    webhookVerifyTokenMasked?: string;
     apiKeyMasked?: string;
     sourceNumber?: string;
     status: 'connected' | 'unconfigured' | 'error';
@@ -530,6 +578,7 @@ export interface TenantUsageResponse {
       maxLeads: number;
       maxImportsPerMonth: number;
       maxMessagesPerMonth: number;
+      maxEmailsPerMonth: number;
       maxAiTokens: number;
     };
   };
@@ -540,6 +589,9 @@ export interface TenantUsageResponse {
     messagesCount: number;
     maxMessages: number;
     messagesPct: number;
+    emailsCount: number;
+    maxEmails: number;
+    emailsPct: number;
     importRowsCount: number;
     maxImports: number;
     aiTokensCount: number;
@@ -583,7 +635,78 @@ export async function changePlanApi(planId: string): Promise<any> {
   });
 }
 
+// Email automation test endpoint (one recipient per request).
+export interface SendTestEmailResult {
+  status: 'simulated' | 'accepted';
+  provider: 'demo' | 'brevo';
+  providerMessageId: string;
+  idempotentReplay?: boolean;
+  notice: string;
+}
 
+export async function sendTestEmailApi(payload: { to: string; subject: string; textContent: string; idempotencyKey: string }): Promise<SendTestEmailResult> {
+  return apiRequest<SendTestEmailResult>('/email/send', { method: 'POST', body: JSON.stringify(payload) });
+}
 
+// ==========================================
+// Workspace team, seat caps and member passwords
+// ==========================================
 
+export interface TeamMemberRecord {
+  membershipId: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  role: 'Admin' | 'Sales Manager' | 'Sales Executive' | 'Read-only';
+  membershipStatus: string;
+  accountStatus: string;
+  invitedAt?: string;
+  acceptedAt?: string;
+  mustChangePassword: boolean;
+  leadsAssigned: number;
+}
 
+export interface TeamMembersResponse {
+  members: TeamMemberRecord[];
+  maxMembers: number;
+  planId: string;
+  remainingSeats: number;
+}
+
+export async function fetchTeamMembersApi(): Promise<TeamMembersResponse> {
+  return apiRequest<TeamMembersResponse>('/team/members', { method: 'GET' });
+}
+
+export async function createTeamMemberApi(payload: {
+  email: string;
+  displayName: string;
+  role: TeamMemberRecord['role'];
+}): Promise<any> {
+  return apiRequest<any>('/team/members', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateTeamMemberRoleApi(userId: string, role: TeamMemberRecord['role']): Promise<any> {
+  return apiRequest<any>(`/team/members/${encodeURIComponent(userId)}/role`, {
+    method: 'PATCH',
+    body: JSON.stringify({ role }),
+  });
+}
+
+export async function updateTeamMemberStatusApi(userId: string, status: 'active' | 'suspended'): Promise<any> {
+  return apiRequest<any>(`/team/members/${encodeURIComponent(userId)}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+}
+
+export async function changePasswordApi(currentPassword: string, newPassword: string): Promise<any> {
+  const result = await apiRequest<{ token: string; session: any }>('/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  localStorage.setItem('auth_token', result.token);
+  return result.session;
+}

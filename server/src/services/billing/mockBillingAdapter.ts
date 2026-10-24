@@ -15,7 +15,7 @@ export class MockBillingAdapter implements BillingProviderAdapter {
       const expected = crypto.createHmac('sha256', secret).update(payload).digest('hex');
       return crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'));
     } catch {
-      return signature === secret;
+      return false;
     }
   }
 
@@ -42,52 +42,81 @@ export class StripeBillingAdapter implements BillingProviderAdapter {
     if (!signature || !secret) return false;
     try {
       const elements = signature.split(',');
-      const timestamp = elements.find(e => e.startsWith('t='))?.slice(2);
-      const sig = elements.find(e => e.startsWith('v1='))?.slice(3);
-      if (!timestamp || !sig) return false;
-      const signedPayload = `${timestamp}.${payload.toString()}`;
+      const timestampText = elements.find(e => e.startsWith('t='))?.slice(2);
+      const signatureHex = elements.find(e => e.startsWith('v1='))?.slice(3);
+      const timestamp = Number(timestampText);
+      if (!timestampText || !signatureHex || !Number.isFinite(timestamp)) return false;
+
+      // Stripe signs each delivery attempt; reject stale signed payloads and replayed requests.
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      if (Math.abs(nowSeconds - timestamp) > 300) return false;
+
+      const signedPayload = `${timestampText}.${payload.toString()}`;
       const expected = crypto.createHmac('sha256', secret).update(signedPayload).digest('hex');
-      return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
+      const actualBuffer = Buffer.from(signatureHex, 'hex');
+      const expectedBuffer = Buffer.from(expected, 'hex');
+      return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
     } catch {
       return false;
     }
   }
 
   parseWebhookEvent(body: any): BillingWebhookEvent | null {
-    if (!body || !body.id) return null;
-    const type = body.type;
-    const obj = body.data?.object;
-    if (!obj) return null;
+    if (!body || typeof body.id !== 'string' || !body.id || typeof body.type !== 'string') return null;
+    const object = body.data?.object;
+    if (!object || typeof object !== 'object') return null;
 
-    let eventType: BillingWebhookEvent['eventType'] = 'subscription.renewed';
-    let status: BillingWebhookEvent['status'] = 'active';
+    const metadata = object.metadata || object.subscription_details?.metadata || object.parent?.subscription_details?.metadata;
+    const tenantId = typeof metadata?.tenantId === 'string' ? metadata.tenantId : '';
+    const planId = typeof metadata?.planId === 'string' ? metadata.planId : '';
+    const supportedPlans = ['starter', 'growth', 'enterprise'];
+    if (!tenantId || !supportedPlans.includes(planId)) return null;
 
-    if (type === 'customer.subscription.deleted') {
-      eventType = 'subscription.cancelled';
-      status = 'cancelled';
-    } else if (type === 'invoice.payment_failed') {
-      eventType = 'payment.failed';
-      status = 'past_due';
+    let eventType: BillingWebhookEvent['eventType'];
+    let status: BillingWebhookEvent['status'];
+    switch (body.type) {
+      case 'customer.subscription.created':
+        eventType = 'subscription.created';
+        status = object.status === 'past_due' ? 'past_due' : object.status === 'canceled' ? 'cancelled' : 'active';
+        break;
+      case 'customer.subscription.updated':
+      case 'invoice.payment_succeeded':
+        eventType = 'subscription.renewed';
+        status = object.status === 'past_due' ? 'past_due' : object.status === 'canceled' ? 'cancelled' : 'active';
+        break;
+      case 'customer.subscription.deleted':
+        eventType = 'subscription.cancelled';
+        status = 'cancelled';
+        break;
+      case 'invoice.payment_failed':
+        eventType = 'payment.failed';
+        status = 'past_due';
+        break;
+      default:
+        return null;
     }
 
+    const createdAt = Number(body.created);
     return {
       provider: 'stripe',
       eventId: body.id,
       eventType,
-      tenantId: obj.metadata?.tenantId || 'tenant_bring_my_bite',
-      planId: (obj.metadata?.planId as any) || 'growth',
+      tenantId,
+      planId: planId as BillingWebhookEvent['planId'],
       status,
-      timestamp: new Date(body.created * 1000),
+      timestamp: Number.isFinite(createdAt) && createdAt > 0 ? new Date(createdAt * 1000) : new Date(),
     };
   }
 }
 
-const adapters: Record<BillingProviderType, BillingProviderAdapter> = {
+const adapters: Partial<Record<BillingProviderType, BillingProviderAdapter>> = {
   mock: new MockBillingAdapter(),
   stripe: new StripeBillingAdapter(),
-  razorpay: new MockBillingAdapter(), // graceful adapter for razorpay
+  // Razorpay is deliberately unavailable until a real signature-verifying adapter is implemented.
 };
 
 export function getBillingAdapter(provider: BillingProviderType = 'mock'): BillingProviderAdapter {
-  return adapters[provider] || adapters.mock;
+  const adapter = adapters[provider];
+  if (!adapter) throw new Error(`Billing provider "${String(provider)}" is not implemented in this release.`);
+  return adapter;
 }

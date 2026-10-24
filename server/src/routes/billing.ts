@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import { requireAuth } from '../middleware/auth';
 import { requireTenant } from '../middleware/tenant';
 import { pool, resolveDatabaseConfig } from '../db';
@@ -166,47 +167,120 @@ router.post('/change-plan', requireAuth, requireTenant(['Admin']), async (req: R
   }
 });
 
-// 4. POST /api/billing/webhook - Webhook Event Ingestion (Idempotent)
+// 4. POST /api/billing/webhook - verify signatures and process each provider event once.
 router.post('/webhook', async (req: Request, res: Response): Promise<void> => {
-  const provider = (req.headers['x-billing-provider'] as any) || 'mock';
-  const adapter = getBillingAdapter(provider);
-  const signature = (req.headers['stripe-signature'] || req.headers['x-razorpay-signature'] || '') as string;
+  const requestId = req.requestId || 'req_unknown';
+  const providerHeader = req.headers['x-billing-provider'];
+  const provider = typeof providerHeader === 'string' ? providerHeader.trim().toLowerCase() : '';
+  if (!provider) {
+    res.status(400).json({ success: false, error: { code: 'BILLING_PROVIDER_REQUIRED', message: 'Set x-billing-provider to a configured provider.', requestId } });
+    return;
+  }
+
+  if (provider === 'mock' && process.env.NODE_ENV === 'production') {
+    res.status(404).json({ success: false, error: { code: 'BILLING_PROVIDER_UNAVAILABLE', message: 'Mock billing webhooks are disabled in production.', requestId } });
+    return;
+  }
+
+  let adapter;
+  try {
+    adapter = getBillingAdapter(provider as any);
+  } catch {
+    res.status(501).json({ success: false, error: { code: 'BILLING_PROVIDER_UNSUPPORTED', message: 'This billing provider is not implemented in the current release.', requestId } });
+    return;
+  }
+
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  const signatureHeader = provider === 'stripe'
+    ? req.headers['stripe-signature']
+    : provider === 'mock' ? req.headers['x-mock-billing-signature'] : req.headers['x-razorpay-signature'];
+  const signature = typeof signatureHeader === 'string' ? signatureHeader : '';
+  const secret = provider === 'stripe' ? process.env.STRIPE_WEBHOOK_SECRET
+    : provider === 'mock' ? process.env.MOCK_BILLING_WEBHOOK_SECRET
+    : process.env.RAZORPAY_WEBHOOK_SECRET;
+
+  // Unit tests may use the explicit mock adapter without a secret. All non-test
+  // delivery paths must be authenticated with an HMAC signature over raw request bytes.
+  if (!(provider === 'mock' && process.env.NODE_ENV === 'test')) {
+    if (!secret) {
+      res.status(503).json({ success: false, error: { code: 'BILLING_WEBHOOK_NOT_CONFIGURED', message: 'The billing webhook secret is missing from the server environment.', requestId } });
+      return;
+    }
+    if (!rawBody || !signature || !adapter.verifyWebhookSignature(rawBody, signature, secret)) {
+      res.status(401).json({ success: false, error: { code: 'BILLING_SIGNATURE_INVALID', message: 'The billing webhook signature is missing or invalid.', requestId } });
+      return;
+    }
+  }
 
   const event = adapter.parseWebhookEvent(req.body);
-
   if (!event) {
-    res.status(400).json({ success: false, error: 'Unrecognized webhook event payload.' });
+    res.status(400).json({ success: false, error: { code: 'BILLING_EVENT_INVALID', message: 'The billing provider event is unrecognized or lacks required workspace/plan metadata.', requestId } });
+    return;
+  }
+  if (event.provider !== provider || !event.eventId || !['subscription.created', 'subscription.renewed', 'subscription.cancelled', 'payment.failed'].includes(event.eventType) || !PLAN_DEFINITIONS[event.planId as PlanTier] || !['trial', 'active', 'past_due', 'cancelled', 'suspended'].includes(event.status)) {
+    res.status(400).json({ success: false, error: { code: 'BILLING_EVENT_INVALID', message: 'The billing provider event contains unsupported provider, plan or subscription state values.', requestId } });
     return;
   }
 
   const rawTenantId = event.tenantId;
-  const tenantId = toDbTenantId(rawTenantId);
-  const plan = PLAN_DEFINITIONS[event.planId] || PLAN_DEFINITIONS.starter;
-
-  const dbConfig = resolveDatabaseConfig();
-  if (dbConfig.isBlocked) {
-    if (IN_MEMORY_SUBSCRIPTIONS[rawTenantId]) {
-      IN_MEMORY_SUBSCRIPTIONS[rawTenantId].status = event.status;
-      IN_MEMORY_SUBSCRIPTIONS[rawTenantId].planId = event.planId;
-      IN_MEMORY_SUBSCRIPTIONS[rawTenantId].planName = plan.name;
-    }
-    res.status(200).json({ success: true, eventId: event.eventId, processed: true });
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const tenantId = TENANT_UUID_MAP[rawTenantId] || (uuidPattern.test(rawTenantId) ? rawTenantId : null);
+  if (!tenantId) {
+    res.status(400).json({ success: false, error: { code: 'BILLING_TENANT_INVALID', message: 'The signed billing event does not identify a valid workspace.', requestId } });
     return;
   }
 
-  try {
-    await pool.query(
-      `INSERT INTO tenant_subscriptions (
-         tenant_id, plan_id, plan_name, status, billing_provider, limits, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
-       ON CONFLICT (tenant_id)
-       DO UPDATE SET plan_id = $2, plan_name = $3, status = $4, limits = $6, updated_at = NOW();`,
-      [tenantId, event.planId, plan.name, event.status, event.provider, JSON.stringify(plan.limits)]
-    );
+  if (resolveDatabaseConfig().isBlocked) {
+    res.status(503).json({ success: false, error: { code: 'BILLING_DATABASE_UNAVAILABLE', message: 'Billing events cannot be processed without persistent storage.', requestId } });
+    return;
+  }
 
-    res.status(200).json({ success: true, eventId: event.eventId, processed: true });
-  } catch {
-    res.status(200).json({ success: true, processed: false });
+  const plan = PLAN_DEFINITIONS[event.planId as PlanTier];
+  const payloadHash = crypto.createHash('sha256').update(rawBody || Buffer.from(JSON.stringify(req.body))).digest('hex');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const tenant = await client.query('SELECT id FROM tenants WHERE id = $1 FOR UPDATE', [tenantId]);
+    if (tenant.rowCount !== 1) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ success: false, error: { code: 'BILLING_TENANT_NOT_FOUND', message: 'The billing event workspace was not found.', requestId } });
+      return;
+    }
+
+    const inserted = await client.query(
+      `INSERT INTO billing_webhook_events (provider, event_id, tenant_id, event_type, event_timestamp, payload_sha256, processing_status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'received')
+       ON CONFLICT (provider, event_id) DO NOTHING
+       RETURNING id`,
+      [provider, event.eventId, tenantId, event.eventType, event.timestamp, payloadHash],
+    );
+    if (inserted.rowCount !== 1) {
+      await client.query('COMMIT');
+      res.status(200).json({ success: true, eventId: event.eventId, processed: false, duplicate: true, requestId });
+      return;
+    }
+
+    await client.query(
+      `INSERT INTO tenant_subscriptions (tenant_id, plan_id, plan_name, status, billing_provider, limits, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW())
+       ON CONFLICT (tenant_id) DO UPDATE SET
+         plan_id = EXCLUDED.plan_id, plan_name = EXCLUDED.plan_name,
+         status = EXCLUDED.status, billing_provider = EXCLUDED.billing_provider,
+         limits = EXCLUDED.limits, updated_at = NOW()`,
+      [tenantId, event.planId, plan.name, event.status, provider, JSON.stringify(plan.limits)],
+    );
+    await client.query(
+      `UPDATE billing_webhook_events SET processing_status = 'processed', processed_at = NOW() WHERE provider = $1 AND event_id = $2`,
+      [provider, event.eventId],
+    );
+    await client.query('COMMIT');
+    res.status(200).json({ success: true, eventId: event.eventId, processed: true, duplicate: false, requestId });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    console.error('[Billing Webhook] Verified event processing failed', { requestId, provider, error });
+    res.status(503).json({ success: false, error: { code: 'BILLING_EVENT_PROCESSING_FAILED', message: 'The verified billing event could not be committed. Provider delivery can be retried safely.', requestId } });
+  } finally {
+    client.release();
   }
 });
 

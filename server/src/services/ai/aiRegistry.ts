@@ -4,15 +4,19 @@ import { OpenAiAdapter } from './openaiAdapter';
 import { GeminiAdapter } from './geminiAdapter';
 import { maskSecret, encryptSecret, decryptSecret } from '../whatsapp/adapterRegistry';
 
-const adapters: Record<AiProviderType, AiProviderAdapter> = {
+const adapters: Partial<Record<AiProviderType, AiProviderAdapter>> = {
   mock: new MockAiAdapter(),
   openai: new OpenAiAdapter(),
   gemini: new GeminiAdapter(),
-  anthropic: new MockAiAdapter(), // graceful fallback for anthropic
 };
 
 export function getAiAdapter(provider: AiProviderType = 'mock'): AiProviderAdapter {
-  return adapters[provider] || adapters.mock;
+  const adapter = adapters[provider];
+  if (!adapter) throw new Error(`AI provider \"${String(provider)}\" is not implemented in this release.`);
+  if (provider === 'mock' && process.env.NODE_ENV === 'production') {
+    throw new Error('The mock AI provider cannot be used in production. Configure a real AI provider.');
+  }
+  return adapter;
 }
 
 export function getAllSupportedAiProviders(): Array<{
@@ -20,7 +24,7 @@ export function getAllSupportedAiProviders(): Array<{
   name: string;
   supportedModels: string[];
 }> {
-  return [
+  const providers: Array<{ id: AiProviderType; name: string; supportedModels: string[] }> = [
     {
       id: 'openai',
       name: 'OpenAI (GPT-4o / GPT-4o-mini)',
@@ -28,20 +32,18 @@ export function getAllSupportedAiProviders(): Array<{
     },
     {
       id: 'gemini',
-      name: 'Google Gemini (1.5 Flash / Pro)',
+      name: 'Google Gemini',
       supportedModels: ['gemini-1.5-flash', 'gemini-1.5-pro'],
     },
-    {
-      id: 'anthropic',
-      name: 'Anthropic Claude (3.5 Sonnet / Haiku)',
-      supportedModels: ['claude-3-5-sonnet', 'claude-3-haiku'],
-    },
-    {
+  ];
+  if (process.env.NODE_ENV !== 'production') {
+    providers.push({
       id: 'mock',
       name: 'Local Sandbox / Mock AI',
       supportedModels: ['mock-fast-reply', 'mock-smart-assistant'],
-    },
-  ];
+    });
+  }
+  return providers;
 }
 
 export function maskAiConfig(config: AiConfig): MaskedAiConfig {

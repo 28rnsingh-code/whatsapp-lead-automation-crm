@@ -342,6 +342,17 @@ router.post('/', requireAuth, requireTenant(), async (req: Request, res: Respons
       },
     });
   } catch (error: any) {
+    if (error?.code === 'P0001' && error?.message === 'PLAN_LEAD_LIMIT_REACHED') {
+      res.status(409).json({
+        success: false,
+        error: {
+          code: 'PLAN_LEAD_LIMIT_REACHED',
+          message: error.detail || 'Your current plan has reached its active-lead limit. Upgrade your plan to add more leads.',
+          requestId,
+        },
+      });
+      return;
+    }
     if (error.name === 'DatabaseSafetyError') {
       res.status(503).json({
         success: false,

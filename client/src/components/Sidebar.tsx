@@ -7,7 +7,10 @@ export interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
   onOpenWorkspaceModal: () => void;
+  onOpenPlans: () => void;
   currentWorkspaceName: string;
+  isDemo: boolean;
+  demoUsageText?: string;
 }
 
 interface NavItem {
@@ -31,7 +34,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'team', label: 'Team & Permissions', icon: '♧' },
   { id: 'settings', label: 'Settings', icon: '⚙' },
   { id: 'audit', label: 'Audit Log', icon: '▣' },
-  { id: 'auth', label: 'Login & Recovery', icon: '⚿' },
+  { id: 'auth', label: 'Sign Out', icon: '↪' },
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -40,7 +43,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpen,
   onClose,
   onOpenWorkspaceModal,
+  onOpenPlans,
   currentWorkspaceName,
+  isDemo,
+  demoUsageText = '0 of 5 demo actions used',
 }) => {
   return (
     <aside className={`sidebar ${isOpen ? 'open' : ''}`} id="sidebar">
@@ -48,7 +54,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="brand">
         <div className="brandmark">O</div>
         <div className="brand-text">
-          <strong>OneClick Automics</strong>
+          <strong>One.Click Autonix</strong>
           <small>CRM + WhatsApp Lead SaaS</small>
         </div>
       </div>
@@ -57,6 +63,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <button
         type="button"
         className="workspace-button"
+        disabled={isDemo}
         onClick={onOpenWorkspaceModal}
         aria-label="Switch active workspace"
       >
@@ -71,7 +78,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Nav List */}
       <nav className="nav-group" aria-label="Main Navigation">
-        {NAV_ITEMS.map((item) => (
+        {NAV_ITEMS.filter((item) => !isDemo || ['dashboard', 'leads', 'pipeline', 'followups', 'contacts', 'reports', 'whatsapp', 'integrations', 'auth'].includes(item.id)).map((item) => (
           <button
             key={item.id}
             type="button"
@@ -92,6 +99,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Footer & User Card */}
       <div className="sidebar-footer">
+        {isDemo ? (
+          <div className="upgrade-card" role="status">
+            <strong>Public Demo</strong>
+            <p>{demoUsageText}</p>
+            <p style={{ fontSize: '11px' }}>WhatsApp and email delivery are simulated. Real integrations require your own authorised provider credentials.</p>
+          </div>
+        ) : (
         <div className="upgrade-card">
           <strong>✦ Upgrade Plan</strong>
           <p>More leads, team members, and higher WhatsApp API message limits.</p>
@@ -99,17 +113,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
             type="button"
             className="btn btn-primary"
             style={{ width: '100%', fontSize: '11px', padding: '6px 8px', justifyContent: 'center' }}
-            onClick={() => alert('Plan upgrade checkout flow')}
+            onClick={onOpenPlans}
           >
             Explore Plans
           </button>
         </div>
+        )}
 
         <div className="user-profile-card">
           <div className="avatar">RS</div>
           <div>
-            <strong style={{ display: 'block', fontSize: '12px', color: '#ffffff' }}>Rohan Singh</strong>
-            <small style={{ color: 'var(--sidebar-muted)', fontSize: '11px' }}>Workspace Admin</small>
+            <strong style={{ display: 'block', fontSize: '12px', color: '#ffffff' }}>{isDemo ? 'Demo Visitor' : 'Rohan Singh'}</strong>
+            <small style={{ color: 'var(--sidebar-muted)', fontSize: '11px' }}>{isDemo ? 'Restricted Demo Access' : 'Workspace User'}</small>
           </div>
         </div>
       </div>

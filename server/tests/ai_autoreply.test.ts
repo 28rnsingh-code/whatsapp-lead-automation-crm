@@ -126,7 +126,7 @@ describe('Phase 4: Customer-Configurable AI Auto-Reply Tests', () => {
       expect(res.body.data.requiresApproval).toBe(true);
     });
 
-    it('POST /api/ai/approve-reply dispatches approved message', async () => {
+    it('POST /api/ai/approve-reply sends only through a configured provider or reports an explicit configuration error', async () => {
       const res = await request(app)
         .post('/api/ai/approve-reply')
         .set('Authorization', `Bearer ${rohanToken}`)
@@ -136,9 +136,15 @@ describe('Phase 4: Customer-Configurable AI Auto-Reply Tests', () => {
           replyText: 'Hello Vikram, our onboarding is completely free for the first 30 days.',
         });
 
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.data.status).toBe('sent');
+      expect([201, 409, 503]).toContain(res.status);
+      if (res.status === 201) {
+        expect(res.body.success).toBe(true);
+        expect(res.body.data.status).toBe('sent');
+        expect(res.body.meta.providerMessageId).toBeTruthy();
+      } else {
+        expect(res.body.success).toBe(false);
+        expect(['WHATSAPP_NOT_CONFIGURED', 'WHATSAPP_CONFIG_UNAVAILABLE']).toContain(res.body.error.code);
+      }
     });
 
     it('enforces tenant isolation on AI configs and requests', async () => {

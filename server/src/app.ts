@@ -4,6 +4,7 @@ import { requestIdMiddleware, errorHandler } from './middleware/errorHandler';
 import healthRoutes from './routes/health';
 import authRoutes from './routes/auth';
 import workspaceRoutes from './routes/workspaces';
+import teamRoutes from './routes/team';
 import leadRoutes from './routes/leads';
 import pipelineRoutes from './routes/pipeline';
 import importExportRoutes from './routes/importExport';
@@ -14,27 +15,36 @@ import whatsappRoutes from './routes/whatsapp';
 import aiRoutes from './routes/ai';
 import reportRoutes from './routes/reports';
 import billingRoutes from './routes/billing';
+import emailRoutes from './routes/email';
+import { requireProductionDatabaseReady } from './middleware/databaseReadiness';
+import { auditTrailMiddleware } from './middleware/auditTrail';
+import { demoActionQuota } from './middleware/demoActionQuota';
+import { requirePasswordChangeCompletion } from './middleware/forcePasswordChange';
+import auditRoutes from './routes/audit';
 
 export function createApp(): Express {
   const app = express();
 
   // Standard Middlewares
   app.use(cors());
-  app.use(express.json({ limit: '15mb' }));
+  app.use(express.json({
+    limit: '15mb',
+    verify: (req, _res, buffer) => {
+      // Meta webhook signatures are calculated over the exact original bytes,
+      // not JSON.stringify(req.body), which may produce a different byte stream.
+      (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+    },
+  }));
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
   app.use(requestIdMiddleware);
 
-  // Send browser visitors to the CRM portal. Keep API endpoints under /api.
-  // The portal URL is configured per Vercel environment, never hard-coded in app logic.
+  // Browser visits to the API host should open the actual CRM portal.
   app.get('/', (_req, res) => {
     const portalUrl = process.env.CRM_PORTAL_URL?.trim();
     if (!portalUrl) {
       res.status(503).json({
         success: false,
-        error: {
-          code: 'CRM_PORTAL_URL_NOT_CONFIGURED',
-          message: 'The CRM portal destination is not configured for this deployment.',
-        },
+        error: { code: 'CRM_PORTAL_URL_NOT_CONFIGURED', message: 'The CRM portal destination is not configured for this deployment.' },
       });
       return;
     }
@@ -43,10 +53,7 @@ export function createApp(): Express {
       if (destination.protocol !== 'https:' || !destination.hostname.endsWith('.vercel.app')) {
         res.status(503).json({
           success: false,
-          error: {
-            code: 'CRM_PORTAL_URL_INVALID',
-            message: 'The CRM portal destination must be a verified HTTPS Vercel deployment URL.',
-          },
+          error: { code: 'CRM_PORTAL_URL_INVALID', message: 'The CRM portal destination must be a verified HTTPS Vercel deployment URL.' },
         });
         return;
       }
@@ -54,18 +61,23 @@ export function createApp(): Express {
     } catch {
       res.status(503).json({
         success: false,
-        error: {
-          code: 'CRM_PORTAL_URL_INVALID',
-          message: 'The CRM portal destination is not a valid URL.',
-        },
+        error: { code: 'CRM_PORTAL_URL_INVALID', message: 'The CRM portal destination is not a valid URL.' },
       });
     }
   });
 
   // Mount API Routes
   app.use('/api', healthRoutes);
+  // Keep demo/in-memory route fallbacks out of production whenever PostgreSQL is not ready.
+  app.use('/api', requireProductionDatabaseReady);
+  app.use('/api', auditTrailMiddleware);
+  // Enforce demo workspace boundaries and usage limits before feature routes execute.
+  app.use('/api', demoActionQuota);
+  app.use('/api', requirePasswordChangeCompletion);
   app.use('/api/auth', authRoutes);
   app.use('/api/workspaces', workspaceRoutes);
+  app.use('/api/team', teamRoutes);
+  app.use('/api/audit', auditRoutes);
   app.use('/api/leads', leadRoutes);
   app.use('/api/pipeline', pipelineRoutes);
   app.use('/api/tasks', taskRoutes);
@@ -75,6 +87,7 @@ export function createApp(): Express {
   app.use('/api/ai', aiRoutes);
   app.use('/api/reports', reportRoutes);
   app.use('/api/billing', billingRoutes);
+  app.use('/api/email', emailRoutes);
   app.use('/api/import', importExportRoutes);
   app.use('/api', importExportRoutes); // also mounts /api/export/leads
 

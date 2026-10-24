@@ -367,12 +367,13 @@ export async function executeImportBatch(
   }
 
   if (!dbConfig.isBlocked) {
-    // 1. Batched INSERT using withTransaction
-    if (rowsToInsert.length > 0) {
-      const BATCH_SIZE = 50;
-      for (let i = 0; i < rowsToInsert.length; i += BATCH_SIZE) {
-        const chunk = rowsToInsert.slice(i, i + BATCH_SIZE);
-        await withTransaction(async (client) => {
+    // Insert and update all rows in a single transaction. If a plan quota
+    // trigger rejects a later row, earlier rows are rolled back too.
+    if (rowsToInsert.length > 0 || rowsToUpdate.length > 0) {
+      await withTransaction(async (client) => {
+        const BATCH_SIZE = 50;
+        for (let i = 0; i < rowsToInsert.length; i += BATCH_SIZE) {
+          const chunk = rowsToInsert.slice(i, i + BATCH_SIZE);
           for (const row of chunk) {
             await client.query(
               `INSERT INTO leads (
@@ -380,50 +381,27 @@ export async function executeImportBatch(
                 source, stage_id, deal_value_minor_units, currency, next_action,
                 consent_status, notes, created_by
               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'INR', 'Call', 'Consented', $10, $11);`,
-              [
-                tenantId,
-                row.name,
-                row.phoneRaw,
-                row.phoneNormalized,
-                row.email || null,
-                row.companyName || null,
-                row.source,
-                defaultStageId,
-                row.dealValueMinorUnits || 0,
-                row.notes || '',
-                canonicalUserId,
-              ]
+              [tenantId, row.name, row.phoneRaw, row.phoneNormalized, row.email || null, row.companyName || null, row.source, defaultStageId, row.dealValueMinorUnits || 0, row.notes || '', canonicalUserId]
             );
             importedCount++;
           }
-        });
-      }
-    }
+        }
 
-    // 2. Handle updates
-    if (rowsToUpdate.length > 0) {
-      for (const row of rowsToUpdate) {
-        await pool.query(
-          `UPDATE leads SET
-            name = COALESCE($1, name),
-            email = COALESCE($2, email),
-            company_name = COALESCE($3, company_name),
-            deal_value_minor_units = CASE WHEN $4::bigint > 0 THEN $4::bigint ELSE deal_value_minor_units END,
-            notes = CASE WHEN $5 != '' THEN notes || E'\n' || $5 ELSE notes END,
-            updated_at = NOW()
-          WHERE id = $6 AND tenant_id = $7;`,
-          [
-            row.name,
-            row.email || null,
-            row.companyName || null,
-            row.dealValueMinorUnits || 0,
-            row.notes || '',
-            row.existingLeadId,
-            tenantId,
-          ]
-        );
-        updatedCount++;
-      }
+        for (const row of rowsToUpdate) {
+          await client.query(
+            `UPDATE leads SET
+              name = COALESCE($1, name),
+              email = COALESCE($2, email),
+              company_name = COALESCE($3, company_name),
+              deal_value_minor_units = CASE WHEN $4::bigint > 0 THEN $4::bigint ELSE deal_value_minor_units END,
+              notes = CASE WHEN $5 != '' THEN notes || E'\\n' || $5 ELSE notes END,
+              updated_at = NOW()
+             WHERE id = $6 AND tenant_id = $7;`,
+            [row.name, row.email || null, row.companyName || null, row.dealValueMinorUnits || 0, row.notes || '', row.existingLeadId, tenantId]
+          );
+          updatedCount++;
+        }
+      });
     }
 
     // 3. Record import job in import_jobs table

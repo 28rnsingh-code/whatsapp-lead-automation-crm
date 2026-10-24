@@ -28,7 +28,13 @@ export async function seedDefaults(): Promise<SeedResult> {
   const tenantId = tenantRes.rows[0].id;
 
   // 2. Seed Default User (Rohan Singh)
-  const passwordHash = await hashPassword('Password123!');
+  const bootstrapAdminPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD
+    || (process.env.NODE_ENV === 'test' ? 'Password123!' : (process.env.NODE_ENV === 'production' ? '' : 'Password123!'));
+  if (process.env.NODE_ENV === 'production' &&
+      (!bootstrapAdminPassword || bootstrapAdminPassword.length < 16 || bootstrapAdminPassword === 'Password123!')) {
+    throw new Error('Production bootstrap requires a unique BOOTSTRAP_ADMIN_PASSWORD of at least 16 characters.');
+  }
+  const passwordHash = await hashPassword(bootstrapAdminPassword);
   const userRes = await pool.query<{ id: string }>(
     `INSERT INTO users (id, email_normalized, display_name, password_hash, status)
      VALUES ($1, 'rohan@bringmybite.in', 'Rohan Singh', $2, 'active')
@@ -61,6 +67,64 @@ export async function seedDefaults(): Promise<SeedResult> {
     [tenantId, userId, roleId]
   );
 
+  // Public website demo account; tenant data is isolated from every paying customer.
+  const DEMO_TENANT_ID = 'a0000000-0000-0000-0000-000000000003';
+  const DEMO_USER_ID = 'd0000000-0000-0000-0000-000000000003';
+  const demoTenantResult = await pool.query<{ id: string }>(
+    `INSERT INTO tenants (id, name, slug, status, timezone, currency, locale)
+     VALUES ($1, 'Public Demo Workspace', 'public-demo', 'active', 'Asia/Kolkata', 'INR', 'en-IN')
+     ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, status = 'active'
+     RETURNING id;`,
+    [DEMO_TENANT_ID],
+  );
+  const demoTenantId = demoTenantResult.rows[0].id;
+  const demoPasswordHash = await hashPassword(process.env.PUBLIC_DEMO_PASSWORD || 'demo123');
+  const demoUserResult = await pool.query<{ id: string }>(
+    `INSERT INTO users (id, email_normalized, display_name, password_hash, status)
+     VALUES ($1, 'demo@oneclick.local', 'Public Demo', $2, 'active')
+     ON CONFLICT (email_normalized) DO UPDATE
+       SET display_name = EXCLUDED.display_name, password_hash = EXCLUDED.password_hash, status = 'active'
+     RETURNING id;`,
+    [DEMO_USER_ID, demoPasswordHash],
+  );
+  const demoUserId = demoUserResult.rows[0].id;
+
+  let demoRoleResult = await pool.query<{ id: string }>(
+    `SELECT id FROM roles WHERE tenant_id = $1 AND name = 'Read-only' LIMIT 1;`,
+    [demoTenantId],
+  );
+  if (demoRoleResult.rows.length === 0) {
+    demoRoleResult = await pool.query<{ id: string }>(
+      `INSERT INTO roles (tenant_id, name, description, is_system)
+       VALUES ($1, 'Read-only', 'Public demo with restricted and metered test actions', true)
+       RETURNING id;`,
+      [demoTenantId],
+    );
+  }
+  await pool.query(
+    `INSERT INTO memberships (tenant_id, user_id, role_id, status)
+     VALUES ($1, $2, $3, 'active')
+     ON CONFLICT (tenant_id, user_id)
+     DO UPDATE SET role_id = EXCLUDED.role_id, status = 'active';`,
+    [demoTenantId, demoUserId, demoRoleResult.rows[0].id],
+  );
+
+  await pool.query(
+    `INSERT INTO tenant_subscriptions (
+       tenant_id, plan_id, plan_name, status, billing_provider, limits,
+       current_period_start, current_period_end
+     ) VALUES ($1, 'starter', 'Demo Plan', 'trial', 'mock',
+       '{"maxMembers":1,"maxLeads":5,"maxImportsPerMonth":0,"maxMessagesPerMonth":5,"maxAiTokens":0}'::jsonb,
+       NOW(), NOW() + INTERVAL '30 days')
+     ON CONFLICT (tenant_id) DO UPDATE SET
+       plan_id = 'starter', plan_name = 'Demo Plan', status = 'trial',
+       billing_provider = 'mock',
+       limits = '{"maxMembers":1,"maxLeads":5,"maxImportsPerMonth":0,"maxMessagesPerMonth":5,"maxAiTokens":0}'::jsonb,
+       current_period_end = NOW() + INTERVAL '30 days',
+       updated_at = NOW();`,
+    [demoTenantId],
+  );
+
   // 5. Seed Default 6 Pipeline Stages
   const stageDefs = [
     { name: 'New', sortOrder: 1, color: '#155eef', isWon: false, isLost: false },
@@ -89,6 +153,21 @@ export async function seedDefaults(): Promise<SeedResult> {
         [tenantId, st.name, st.sortOrder, st.color, st.isWon, st.isLost]
       );
       stages.push(inserted.rows[0]);
+    }
+  }
+
+  // Seed the same pipeline vocabulary into the isolated public demo workspace.
+  for (const st of stageDefs) {
+    const existingDemoStage = await pool.query(
+      'SELECT id FROM pipeline_stages WHERE tenant_id = $1 AND name = $2 LIMIT 1;',
+      [demoTenantId, st.name],
+    );
+    if (existingDemoStage.rows.length === 0) {
+      await pool.query(
+        `INSERT INTO pipeline_stages (tenant_id, name, sort_order, color_token, is_won, is_lost, active)
+         VALUES ($1, $2, $3, $4, $5, $6, true);`,
+        [demoTenantId, st.name, st.sortOrder, st.color, st.isWon, st.isLost],
+      );
     }
   }
 

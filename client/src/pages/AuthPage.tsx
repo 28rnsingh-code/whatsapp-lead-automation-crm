@@ -1,32 +1,54 @@
 import React, { useState } from 'react';
 
-interface AuthPageProps { onLoginSuccess: () => void; }
+interface AuthPageProps { onLogin: (mustChangePassword?: boolean) => void; }
 
-export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
+export const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
   const [view, setView] = useState<'login' | 'forgot'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [message, setMessage] = useState('');
   const [isError, setIsError] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsSubmitting(true);
     try {
       const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
       const apiBase = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
         ? `${configuredApiBase}/api`
         : configuredApiBase;
+      const requestedUsername = email.trim().toLowerCase();
+      let demoVisitorId: string | undefined;
+      if (requestedUsername === 'demo' || requestedUsername === 'demo@oneclick.local') {
+        try {
+          const existingVisitorId = localStorage.getItem('demo_visitor_id') || '';
+          demoVisitorId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(existingVisitorId)
+            ? existingVisitorId
+            : crypto.randomUUID();
+          localStorage.setItem('demo_visitor_id', demoVisitorId);
+        } catch {
+          demoVisitorId = crypto.randomUUID();
+        }
+      }
       const res = await fetch(`${apiBase}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, ...(demoVisitorId ? { demoVisitorId } : {}) }),
       });
       const data = await res.json();
       if (data.success && data.data?.token) {
         localStorage.setItem('auth_token', data.data.token);
+        localStorage.setItem('is_demo_session', data.data?.demo ? 'true' : 'false');
+        const initialTenantId = data.data.session?.tenant?.id;
+        if (typeof initialTenantId === 'string' && initialTenantId) {
+          localStorage.setItem('active_tenant_id', initialTenantId);
+        } else {
+          localStorage.removeItem('active_tenant_id');
+        }
         setIsError(false);
-        setMessage('✓ Successfully signed in to One.Click Autonix CRM.');
-        onLoginSuccess();
+        setMessage('✓ Successfully signed in to OneClick Automics CRM.');
+        onLogin(Boolean(data.data.session?.mustChangePassword));
       } else {
         setIsError(true);
         setMessage(data.error?.message || 'Authentication failed.');
@@ -34,6 +56,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
     } catch {
       setIsError(true);
       setMessage('Failed to connect to authentication server.');
+    } finally {
+      setIsSubmitting(false);
     }
     setTimeout(() => setMessage(''), 4000);
   };
@@ -92,10 +116,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
           <form onSubmit={handleLogin}>
             <div style={{ display: 'grid', gap: '14px' }}>
               <div>
-                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', fontWeight: 600 }}>Work Email</label>
+                <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px', fontWeight: 600 }}>Work Email or Demo Username</label>
                 <input
-                  type="email"
+                  type="text"
                   required
+                  autoComplete="username"
+                  placeholder="Work email or demo"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="form-control"
@@ -118,8 +144,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
                   style={{ width: '100%' }}
                 />
               </div>
-              <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: '6px' }}>
-                Sign In to Workspace
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0' }}>Public demo access: username <strong>demo</strong>, password <strong>demo123</strong>. Demo changes are isolated, limited to five test actions, and external messages are simulated.</p>
+              <button type="submit" disabled={isSubmitting} className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: '6px', opacity: isSubmitting ? 0.7 : 1 }}>
+                {isSubmitting ? 'Signing in…' : 'Sign In to Workspace'}
               </button>
             </div>
           </form>

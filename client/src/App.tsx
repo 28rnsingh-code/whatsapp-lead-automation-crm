@@ -18,11 +18,15 @@ import { SettingsPage } from './pages/SettingsPage';
 import { AuditPage } from './pages/AuditPage';
 import { AuthPage } from './pages/AuthPage';
 import { OnboardingPage } from './pages/OnboardingPage';
+import { PasswordChangePage } from './pages/PasswordChangePage';
+import { fetchAuthSessionApi } from './services/api';
 
 export const App: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<NavigationPage>('dashboard');
-  const [authChecking, setAuthChecking] = useState(true);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
+  const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
+  const [isDemoSession, setIsDemoSession] = useState<boolean>(() => localStorage.getItem('is_demo_session') === 'true');
+  const [mustChangePassword, setMustChangePassword] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('theme') === 'dark';
   });
@@ -32,30 +36,70 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
-    const token = localStorage.getItem('auth_token');
-    if (!token) {
-      setIsAuthenticated(false);
-      setAuthChecking(false);
-      return () => { cancelled = true; };
+
+    const handleUnauthorized = () => {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('active_tenant_id');
+      localStorage.removeItem('is_demo_session');
+      setIsDemoSession(false);
+      setMustChangePassword(false);
+      setAuthState('unauthenticated');
+      setCurrentPage('auth');
+    };
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+
+    if (!localStorage.getItem('auth_token')) {
+      setAuthState('unauthenticated');
+      setCurrentPage('auth');
+    } else {
+      fetchAuthSessionApi()
+        .then((session) => {
+          if (!cancelled) {
+            setMustChangePassword(Boolean(session?.mustChangePassword));
+            setIsDemoSession(localStorage.getItem('is_demo_session') === 'true');
+            setAuthState('authenticated');
+          }
+        })
+        .catch(() => {
+          localStorage.removeItem('auth_token');
+          localStorage.removeItem('active_tenant_id');
+          localStorage.removeItem('is_demo_session');
+          if (!cancelled) {
+            setIsDemoSession(false);
+            setMustChangePassword(false);
+            setAuthState('unauthenticated');
+            setCurrentPage('auth');
+          }
+        });
     }
-    const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
-    const apiBase = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
-      ? `${configuredApiBase}/api`
-      : configuredApiBase;
-    let tenantId = '';
-    try {
-      const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-      tenantId = JSON.parse(atob(payload)).defaultTenantId || '';
-    } catch { tenantId = ''; }
-    fetch(`${apiBase}/auth/session`, {
-      headers: { Authorization: `Bearer ${token}`, ...(tenantId ? { 'x-tenant-id': tenantId } : {}) },
-    })
-      .then(response => { if (!response.ok) throw new Error('Session expired'); return response.json(); })
-      .then(result => { if (!result.success) throw new Error('Session invalid'); if (!cancelled) setIsAuthenticated(true); })
-      .catch(() => { localStorage.removeItem('auth_token'); if (!cancelled) setIsAuthenticated(false); })
-      .finally(() => { if (!cancelled) setAuthChecking(false); });
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('auth:unauthorized', handleUnauthorized);
+    };
   }, []);
+
+  const handleLogin = (forcePasswordChange = false) => {
+    setIsDemoSession(localStorage.getItem('is_demo_session') === 'true');
+    setMustChangePassword(forcePasswordChange);
+    setAuthState('authenticated');
+    setCurrentPage(forcePasswordChange ? 'auth' : 'dashboard');
+  };
+
+  const handleNavigate = (page: NavigationPage) => {
+    const demoAllowedPages: NavigationPage[] = ['dashboard', 'leads', 'pipeline', 'followups', 'contacts', 'reports', 'whatsapp', 'integrations', 'auth'];
+    if (isDemoSession && !demoAllowedPages.includes(page)) return;
+    if (page === 'auth') {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('active_tenant_id');
+      localStorage.removeItem('is_demo_session');
+      setIsDemoSession(false);
+      setAuthState('unauthenticated');
+      setCurrentPage('auth');
+      return;
+    }
+    setCurrentPage(page);
+  };
 
   useEffect(() => {
     if (isDarkMode) {
@@ -82,11 +126,11 @@ export const App: React.FC = () => {
   const renderCurrentPage = () => {
     switch (currentPage) {
       case 'dashboard':
-        return <DashboardPage onNavigate={setCurrentPage} />;
+        return <DashboardPage onNavigate={handleNavigate} />;
       case 'onboarding':
-        return <OnboardingPage onNavigate={setCurrentPage} />;
+        return <OnboardingPage onNavigate={handleNavigate} />;
       case 'leads':
-        return <LeadsPage />;
+        return <LeadsPage key={globalSearchQuery} initialSearchQuery={globalSearchQuery} />;
       case 'pipeline':
         return <PipelinePage />;
       case 'followups':
@@ -98,7 +142,7 @@ export const App: React.FC = () => {
       case 'whatsapp':
         return <WhatsAppPage />;
       case 'integrations':
-        return <IntegrationsPage />;
+        return <IntegrationsPage onNavigate={handleNavigate} isDemo={isDemoSession} />;
       case 'importexport':
         return <ImportExportPage />;
       case 'team':
@@ -108,21 +152,44 @@ export const App: React.FC = () => {
       case 'audit':
         return <AuditPage />;
       case 'auth':
-        return <AuthPage onLoginSuccess={() => { setIsAuthenticated(true); setCurrentPage('dashboard'); }} />;
+        return null;
       default:
-        return <DashboardPage onNavigate={setCurrentPage} />;
+        return <DashboardPage onNavigate={handleNavigate} />;
     }
   };
 
-  if (authChecking) return <div role="status" style={{ padding: '48px', textAlign: 'center' }}>Checking your workspace session…</div>;
-  if (!isAuthenticated) return <AuthPage onLoginSuccess={() => { setIsAuthenticated(true); setCurrentPage('dashboard'); }} />;
+  if (authState === 'checking') {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: '24px', color: 'var(--text-muted, #667085)' }}
+      >
+        Checking your workspace session…
+      </div>
+    );
+  }
+
+  if (authState === 'unauthenticated') {
+    return <AuthPage onLogin={handleLogin} />;
+  }
+
+  if (mustChangePassword) {
+    return <PasswordChangePage onSuccess={() => { setMustChangePassword(false); setCurrentPage('dashboard'); }} />;
+  }
 
   return (
     <AppShell
       currentPage={currentPage}
-      onNavigate={setCurrentPage}
+      onNavigate={handleNavigate}
       isDarkMode={isDarkMode}
+      isDemo={isDemoSession}
       onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
+      onGlobalSearch={(query) => {
+        if (!query.trim()) return;
+        setGlobalSearchQuery(query.trim());
+        setCurrentPage('leads');
+      }}
     >
       {renderCurrentPage()}
       <ToastContainer toasts={toasts} onDismiss={handleDismissToast} />

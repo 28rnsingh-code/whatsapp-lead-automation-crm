@@ -3,6 +3,7 @@ import { requireAuth } from '../middleware/auth';
 import { requireTenant } from '../middleware/tenant';
 import { pool, resolveDatabaseConfig } from '../db';
 import { DEFAULT_TENANT_ID, DEFAULT_USER_ID } from '../db/seed';
+import { reserveMonthlyUsage, releaseMonthlyUsage, PlanQuotaExceededError, SubscriptionAccessError, MonthlyUsageReservation } from '../services/billing/usageMetering';
 import {
   parseCsvText,
   parseExcelBuffer,
@@ -183,9 +184,16 @@ router.post('/execute', requireAuth, requireTenant(), async (req: Request, res: 
     return;
   }
 
+  let usageReservation: MonthlyUsageReservation | null = null;
   try {
     // 1. Run validation
     const validation = await validateImportRows(tenantId, rows, mapping);
+
+    // Reserve one monthly import job only when the import reaches execution.
+    // The database transaction makes imported/updated lead rows all-or-none.
+    if (!resolveDatabaseConfig().isBlocked) {
+      usageReservation = await reserveMonthlyUsage(tenantId, 'imports', 1);
+    }
 
     // 2. Execute batch inserts/updates
     const result = await executeImportBatch(
@@ -207,6 +215,39 @@ router.post('/execute', requireAuth, requireTenant(), async (req: Request, res: 
       },
     });
   } catch (error: any) {
+    if (usageReservation) {
+      await releaseMonthlyUsage(usageReservation).catch((releaseError) => {
+        console.error('[Import] Could not release failed-import reservation', { requestId, releaseError });
+      });
+    }
+    if (error instanceof PlanQuotaExceededError) {
+      res.status(429).json({
+        success: false,
+        error: {
+          code: error.code,
+          message: `Your monthly import limit has been reached (${error.used}/${error.limit}). Upgrade your plan to continue.`,
+          metric: error.metric,
+          used: error.used,
+          limit: error.limit,
+          requestId,
+        },
+      });
+      return;
+    }
+    if (error instanceof SubscriptionAccessError) {
+      res.status(402).json({
+        success: false,
+        error: { code: error.code, message: 'This workspace subscription is not active. Update the plan before importing.', status: error.subscriptionStatus, requestId },
+      });
+      return;
+    }
+    if (error?.code === 'P0001' && error?.message === 'PLAN_LEAD_LIMIT_REACHED') {
+      res.status(409).json({
+        success: false,
+        error: { code: 'PLAN_LEAD_LIMIT_REACHED', message: error.detail || 'Your current plan has reached its active-lead limit.', requestId },
+      });
+      return;
+    }
     if (error.name === 'DatabaseSafetyError') {
       res.status(503).json({
         success: false,
@@ -218,6 +259,7 @@ router.post('/execute', requireAuth, requireTenant(), async (req: Request, res: 
       });
       return;
     }
+    console.error('[Import] Execution failed', { requestId, error });
     res.status(500).json({
       success: false,
       error: {
