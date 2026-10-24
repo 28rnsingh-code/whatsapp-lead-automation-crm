@@ -87,7 +87,7 @@ export const App: React.FC = () => {
   };
 
   const handleNavigate = (page: NavigationPage) => {
-    const demoAllowedPages: NavigationPage[] = ['dashboard', 'leads', 'pipeline', 'followups', 'contacts', 'reports', 'whatsapp', 'auth'];
+    const demoAllowedPages: NavigationPage[] = ['dashboard', 'leads', 'pipeline', 'followups', 'contacts', 'reports', 'whatsapp', 'integrations', 'auth'];
     if (isDemoSession && !demoAllowedPages.includes(page)) return;
     if (page === 'auth') {
       localStorage.removeItem('auth_token');
@@ -142,7 +142,7 @@ export const App: React.FC = () => {
       case 'whatsapp':
         return <WhatsAppPage />;
       case 'integrations':
-        return <IntegrationsPage onNavigate={handleNavigate} />;
+        return <IntegrationsPage onNavigate={handleNavigate} isDemo={isDemoSession} />;
       case 'importexport':
         return <ImportExportPage />;
       case 'team':
