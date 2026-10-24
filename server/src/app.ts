@@ -24,19 +24,42 @@ export function createApp(): Express {
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
   app.use(requestIdMiddleware);
 
-  // The Vercel project is the API service. Return a useful response at its root
-  // instead of Express's default "Cannot GET /" HTML 404.
-  app.get('/', (req, res) => {
-    res.status(200).json({
-      success: true,
-      data: {
-        service: 'oneclick-automics-crm-api',
-        status: 'online',
-        health: '/api/health',
-        authentication: '/api/auth/login',
-      },
-      meta: { requestId: req.requestId || 'req_unknown' },
-    });
+  // Send browser visitors to the CRM portal. Keep API endpoints under /api.
+  // The portal URL is configured per Vercel environment, never hard-coded in app logic.
+  app.get('/', (_req, res) => {
+    const portalUrl = process.env.CRM_PORTAL_URL?.trim();
+    if (!portalUrl) {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'CRM_PORTAL_URL_NOT_CONFIGURED',
+          message: 'The CRM portal destination is not configured for this deployment.',
+        },
+      });
+      return;
+    }
+    try {
+      const destination = new URL(portalUrl);
+      if (destination.protocol !== 'https:' || !destination.hostname.endsWith('.vercel.app')) {
+        res.status(503).json({
+          success: false,
+          error: {
+            code: 'CRM_PORTAL_URL_INVALID',
+            message: 'The CRM portal destination must be a verified HTTPS Vercel deployment URL.',
+          },
+        });
+        return;
+      }
+      res.redirect(302, destination.toString());
+    } catch {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'CRM_PORTAL_URL_INVALID',
+          message: 'The CRM portal destination is not a valid URL.',
+        },
+      });
+    }
   });
 
   // Mount API Routes
