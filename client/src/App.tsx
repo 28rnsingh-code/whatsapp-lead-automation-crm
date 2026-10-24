@@ -21,12 +21,41 @@ import { OnboardingPage } from './pages/OnboardingPage';
 
 export const App: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<NavigationPage>('dashboard');
+  const [authChecking, setAuthChecking] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('theme') === 'dark';
   });
   const [toasts, setToasts] = useState<ToastMessage[]>([
     { id: '1', text: 'Welcome back, Rohan! 4 new leads arrived via Website & WhatsApp.', type: 'info' },
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const token = localStorage.getItem('auth_token');
+    if (!token) {
+      setIsAuthenticated(false);
+      setAuthChecking(false);
+      return () => { cancelled = true; };
+    }
+    const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+    const apiBase = /^https?:\/\//i.test(configuredApiBase) && !configuredApiBase.endsWith('/api')
+      ? `${configuredApiBase}/api`
+      : configuredApiBase;
+    let tenantId = '';
+    try {
+      const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      tenantId = JSON.parse(atob(payload)).defaultTenantId || '';
+    } catch { tenantId = ''; }
+    fetch(`${apiBase}/auth/session`, {
+      headers: { Authorization: `Bearer ${token}`, ...(tenantId ? { 'x-tenant-id': tenantId } : {}) },
+    })
+      .then(response => { if (!response.ok) throw new Error('Session expired'); return response.json(); })
+      .then(result => { if (!result.success) throw new Error('Session invalid'); if (!cancelled) setIsAuthenticated(true); })
+      .catch(() => { localStorage.removeItem('auth_token'); if (!cancelled) setIsAuthenticated(false); })
+      .finally(() => { if (!cancelled) setAuthChecking(false); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -84,6 +113,9 @@ export const App: React.FC = () => {
         return <DashboardPage onNavigate={setCurrentPage} />;
     }
   };
+
+  if (authChecking) return <div role="status" style={{ padding: '48px', textAlign: 'center' }}>Checking your workspace session…</div>;
+  if (!isAuthenticated) return <AuthPage onLoginSuccess={() => { setIsAuthenticated(true); setCurrentPage('dashboard'); }} />;
 
   return (
     <AppShell
