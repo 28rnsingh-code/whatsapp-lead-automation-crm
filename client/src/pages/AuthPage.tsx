@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 
-export const AuthPage: React.FC = () => {
+interface AuthPageProps { onLoginSuccess: () => void; }
+
+export const AuthPage: React.FC<AuthPageProps> = ({ onLoginSuccess }) => {
   const [view, setView] = useState<'login' | 'forgot'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -24,6 +26,7 @@ export const AuthPage: React.FC = () => {
         localStorage.setItem('auth_token', data.data.token);
         setIsError(false);
         setMessage('✓ Successfully signed in to One.Click Autonix CRM.');
+        onLoginSuccess();
       } else {
         setIsError(true);
         setMessage(data.error?.message || 'Authentication failed.');
