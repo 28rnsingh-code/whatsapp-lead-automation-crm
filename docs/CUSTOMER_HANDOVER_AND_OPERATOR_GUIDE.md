@@ -2,6 +2,8 @@
 
 Version: 1.0 • 24 October 2026
 
+Release status: candidate branch only; no production deployment, paid checkout or live provider credentials are claimed by this guide.
+
 ## 1. Public website demo
 
 - Username: demo; password: demo123.
